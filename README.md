@@ -1,6 +1,6 @@
 # p4n4-api
 
-> Unified **REST API gateway** for the P4N4 platform — written in Rust.
+> Unified **REST API gateway** for the P4N4 platform — written in Python.
 
 `p4n4-api` is the central HTTP API layer for the P4N4 IoT + GenAI + Edge AI platform. It exposes a single, versioned, authenticated REST surface over the otherwise fragmented set of internal services (InfluxDB, MQTT, Ollama, Letta, Edge Impulse Runner), making it easy to build dashboards, mobile apps, or external integrations without touching each service directly.
 
@@ -34,7 +34,7 @@ Part of the [p4n4](https://github.com/raisga/p4n4) platform — an EdgeAI + GenA
                         ▼ HTTP / REST  (port 8000)
               ┌─────────────────────┐
               │      p4n4-api       │
-              │  (Rust · Axum)      │
+              │  (Python · FastAPI) │
               │                     │
               │  ┌───────────────┐  │
               │  │  Auth (JWT)   │  │
@@ -86,8 +86,8 @@ Part of the [p4n4](https://github.com/raisga/p4n4) platform — an EdgeAI + GenA
 
 For local development only:
 
-- [Rust](https://rustup.rs/) stable 1.80+
-- `cargo` (included with Rust)
+- [Python](https://www.python.org/downloads/) 3.11+
+- [uv](https://docs.astral.sh/uv/) (recommended) or `pip`
 
 ---
 
@@ -149,7 +149,7 @@ Key variables:
 | `LETTA_URL` | Letta base URL (`http://p4n4-letta:8283`) |
 | `LETTA_SERVER_PASSWORD` | Letta bearer token |
 | `EDGE_RUNNER_URL` | Edge Impulse runner URL (`http://p4n4-edge-runner:8080`) |
-| `P4N4_API_DATABASE_URL` | SQLite path (`sqlite:///data/p4n4-api.db`) |
+| `P4N4_API_DATABASE_URL` | SQLite path (`sqlite+aiosqlite:///./data/p4n4-api.db`) |
 
 See `.env.example` for the full list.
 
@@ -232,22 +232,23 @@ See the [DESIGN.md](DESIGN.md) for complete request/response schemas, error code
 
 ```
 p4n4-api/
-├── Cargo.toml
+├── pyproject.toml
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .env.example
-├── migrations/
-│   └── 0001_create_devices.sql
-├── src/
-│   ├── main.rs              # startup: config → state → router → serve
-│   ├── config.rs            # Settings struct
-│   ├── state.rs             # AppState (Arc) shared across handlers
-│   ├── error.rs             # ApiError → (StatusCode, JSON) IntoResponse
-│   ├── auth/                # JWT claims, middleware extractor, token helpers
-│   ├── routes/              # One module per API group
-│   ├── clients/             # Thin HTTP/MQTT clients for each upstream service
-│   ├── models/              # Request/response types (serde)
-│   └── db/                  # SQLx queries for the device registry
+├── alembic/
+│   └── versions/
+│       └── 0001_create_devices.py
+├── app/
+│   ├── main.py              # startup: lifespan → app → routers
+│   ├── config.py            # Settings (pydantic-settings)
+│   ├── state.py             # AppState shared via dependency injection
+│   ├── errors.py            # exception handlers → JSON responses
+│   ├── auth/                # JWT claims, dependencies, token helpers
+│   ├── routes/              # One APIRouter per API group
+│   ├── clients/             # Async HTTP/MQTT clients for each upstream service
+│   ├── models/              # Pydantic schemas (request/response)
+│   └── db/                  # SQLAlchemy queries for the device registry
 └── tests/
     ├── integration/
     └── unit/
@@ -258,24 +259,24 @@ p4n4-api/
 ## Development
 
 ```bash
-# Build
-cargo build
+# Install dependencies
+uv sync
 
 # Run locally (requires .env or exported env vars)
-cargo run
+uv run uvicorn app.main:app --reload --port 8000
 
 # Tests
-cargo test
+uv run pytest
 
 # Lint
-cargo clippy -- -D warnings
+uv run ruff check .
 
 # Format
-cargo fmt
+uv run ruff format .
 ```
 
 The API requires a reachable MQTT broker and InfluxDB instance (or mock environment).
-For isolated unit tests, use the test helpers in `tests/common/`.
+For isolated unit tests, use the fixtures in `tests/conftest.py`.
 
 ---
 
@@ -322,12 +323,12 @@ p4n4 up --api
 
 - [p4n4 Platform](https://github.com/raisga/p4n4) — umbrella repo and architecture docs
 - [DESIGN.md](DESIGN.md) — full API design document (tech stack, schemas, milestones)
-- [p4n4-lib](https://github.com/raisga/p4n4-lib) — shared Rust library (models, clients, auth) consumed by this crate
+- [p4n4-lib](https://github.com/raisga/p4n4-lib) — shared library (models, clients, auth) consumed by this package
 - [p4n4-iot](https://github.com/raisga/p4n4-iot) — IoT stack (MQTT, InfluxDB, Node-RED, Grafana)
 - [p4n4-ai](https://github.com/raisga/p4n4-ai) — GenAI stack (Ollama, Letta, n8n)
 - [p4n4-edge](https://github.com/raisga/p4n4-edge) — Edge AI stack (Edge Impulse runner)
-- [Axum](https://github.com/tokio-rs/axum) — Rust web framework
-- [utoipa](https://github.com/juhaku/utoipa) — OpenAPI 3.1 generation for Rust
+- [FastAPI](https://fastapi.tiangolo.com/) — Python web framework (OpenAPI 3.1 built-in)
+- [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) — settings management via environment variables
 
 ---
 
