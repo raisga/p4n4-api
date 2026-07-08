@@ -8,6 +8,27 @@ Part of the [p4n4](https://github.com/raisga/p4n4) platform — an EdgeAI + GenA
 
 ---
 
+## Status
+
+**v0.1** implements a read-only project/stack surface built on
+[`p4n4-lib`](https://github.com/raisga/p4n4-lib) (manifest, layout, validation, and
+Compose status — both flat and multi-layer project layouts):
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Liveness probe |
+| `GET` | `/api/v1/project` | Manifest, layout (`flat`/`multi`), and per-stack directories |
+| `GET` | `/api/v1/project/validate` | Run `p4n4_lib.validate` checks; returns `{ok, passed, errors}` |
+| `GET` | `/api/v1/stacks` | Compose service status per stack |
+| `GET` | `/api/v1/stacks/{stack}` | One stack's service status (404 if not enabled) |
+| `GET` | `/swagger-ui`, `/openapi.json` | Interactive docs / OpenAPI spec |
+
+Everything else in this README (auth, device registry, telemetry, SSE, agents, MQTT,
+metrics) is the **design target**, not yet implemented. State-changing endpoints
+(stack up/down, secret rotation) are deliberately deferred until auth lands.
+
+---
+
 ## Table of Contents
 
 - [Architecture](#architecture)
@@ -93,37 +114,38 @@ For local development only:
 
 ## Getting Started
 
-1. **Clone the repository**
+1. **Clone and install** (with [`p4n4-lib`](https://github.com/raisga/p4n4-lib))
 
    ```bash
    git clone https://github.com/raisga/p4n4-api.git
    cd p4n4-api
+   uv venv
+   uv pip install "p4n4-lib @ git+https://github.com/raisga/p4n4-lib.git" -e .
+   # monorepo: uv pip install -e ../../core/lib -e .
    ```
 
-2. **Configure environment variables**
+2. **Point it at a p4n4 project** (scaffolded by `p4n4 init`; flat or multi-layer)
 
    ```bash
-   cp .env.example .env
-   # Edit .env — set INFLUXDB_TOKEN, MQTT credentials, and JWT secret
+   export P4N4_PROJECT_DIR=~/projects/my-p4n4-project
    ```
 
-3. **Ensure `p4n4-net` exists** (skip if p4n4-iot is already running)
+3. **Start the API**
 
    ```bash
-   docker network create p4n4-net
+   uv run p4n4-api
+   # or: uv run uvicorn p4n4_api.main:app --reload --port 8000
    ```
 
-4. **Start the API**
-
-   ```bash
-   docker compose up -d
-   ```
-
-5. **Verify it is running**
+4. **Verify it is running**
 
    ```bash
    curl http://localhost:8000/health
    # {"status":"ok"}
+
+   curl http://localhost:8000/api/v1/project
+   curl http://localhost:8000/api/v1/project/validate
+   curl http://localhost:8000/api/v1/stacks
 
    # Open the interactive API docs
    open http://localhost:8000/swagger-ui
@@ -133,25 +155,17 @@ For local development only:
 
 ## Configuration
 
-All configuration is read from environment variables (or a `.env` file). Copy `.env.example` and fill in the values that match your running `p4n4-iot` and `p4n4-ai` stacks.
-
-Key variables:
+All configuration is read from environment variables. Currently used:
 
 | Variable | Description |
 |---|---|
+| `P4N4_PROJECT_DIR` | p4n4 project directory to serve (walks up to `.p4n4.json`; default: the server's cwd) |
+| `P4N4_API_HOST` | Bind address (default: `127.0.0.1`) |
 | `P4N4_API_PORT` | HTTP listen port (default: `8000`) |
-| `P4N4_API_JWT_SECRET` | Secret for HS256 JWT signing (256-bit hex) |
-| `INFLUXDB_URL` | InfluxDB base URL (`http://p4n4-influxdb:8086`) |
-| `INFLUXDB_TOKEN` | InfluxDB API token — must match `p4n4-iot` `.env` |
-| `MQTT_HOST` | Mosquitto host (`p4n4-mqtt`) |
-| `MQTT_USER` / `MQTT_PASSWORD` | MQTT credentials — must match `p4n4-iot` `.env` |
-| `OLLAMA_URL` | Ollama base URL (`http://p4n4-ollama:11434`) |
-| `LETTA_URL` | Letta base URL (`http://p4n4-letta:8283`) |
-| `LETTA_SERVER_PASSWORD` | Letta bearer token |
-| `EDGE_RUNNER_URL` | Edge Impulse runner URL (`http://p4n4-edge-runner:8080`) |
-| `P4N4_API_DATABASE_URL` | SQLite path (`sqlite+aiosqlite:///./data/p4n4-api.db`) |
 
-See `.env.example` for the full list.
+Planned (for the upstream-proxy features below): `P4N4_API_JWT_SECRET`, `INFLUXDB_URL`,
+`INFLUXDB_TOKEN`, `MQTT_HOST`, `MQTT_USER`/`MQTT_PASSWORD`, `OLLAMA_URL`, `LETTA_URL`,
+`LETTA_SERVER_PASSWORD`, `EDGE_RUNNER_URL`, `P4N4_API_DATABASE_URL`.
 
 ---
 
@@ -230,40 +244,36 @@ See the [DESIGN.md](DESIGN.md) for complete request/response schemas, error code
 
 ## Project Structure
 
+Current (v0.1):
+
 ```
 p4n4-api/
 ├── pyproject.toml
-├── Dockerfile
-├── docker-compose.yml
-├── .env.example
-├── alembic/
-│   └── versions/
-│       └── 0001_create_devices.py
-├── app/
-│   ├── main.py              # startup: lifespan → app → routers
-│   ├── config.py            # Settings (pydantic-settings)
-│   ├── state.py             # AppState shared via dependency injection
-│   ├── errors.py            # exception handlers → JSON responses
-│   ├── auth/                # JWT claims, dependencies, token helpers
-│   ├── routes/              # One APIRouter per API group
-│   ├── clients/             # Async HTTP/MQTT clients for each upstream service
-│   ├── models/              # Pydantic schemas (request/response)
-│   └── db/                  # SQLAlchemy queries for the device registry
+├── p4n4_api/
+│   ├── main.py              # FastAPI app factory + `p4n4-api` entrypoint
+│   ├── config.py            # Settings from environment variables
+│   ├── deps.py              # Project resolution dependency (p4n4_lib.manifest)
+│   └── routes/              # One APIRouter per API group
+│       ├── health.py        # GET /health
+│       ├── project.py       # GET /api/v1/project, /project/validate
+│       └── stacks.py        # GET /api/v1/stacks, /stacks/{stack}
 └── tests/
-    ├── integration/
-    └── unit/
 ```
+
+Planned additions as the upstream-proxy features land: `auth/` (JWT), `clients/`
+(async HTTP/MQTT clients per upstream service), `models/` (Pydantic schemas),
+`db/` + `alembic/` (device registry), `Dockerfile` + `docker-compose.yml`.
 
 ---
 
 ## Development
 
 ```bash
-# Install dependencies
-uv sync
+# Install dependencies (see Getting Started for the p4n4-lib install)
+uv pip install -e ".[dev]"
 
-# Run locally (requires .env or exported env vars)
-uv run uvicorn app.main:app --reload --port 8000
+# Run locally against a scaffolded project
+P4N4_PROJECT_DIR=~/projects/my-p4n4-project uv run uvicorn p4n4_api.main:app --reload --port 8000
 
 # Tests
 uv run pytest
@@ -275,8 +285,8 @@ uv run ruff check .
 uv run ruff format .
 ```
 
-The API requires a reachable MQTT broker and InfluxDB instance (or mock environment).
-For isolated unit tests, use the fixtures in `tests/conftest.py`.
+Tests use synthetic projects and a stubbed Compose client, so they run without
+Docker or live services. Fixtures live in `tests/conftest.py`.
 
 ---
 
@@ -292,19 +302,13 @@ This does not conflict with any other service in the P4N4 platform.
 
 ## Network Requirements
 
-`p4n4-api` attaches to `p4n4-net` as an **external** network. Start `p4n4-iot` first (or create the network manually):
+In v0.1 the API runs **on the host** (not in a container): the stack-status endpoints
+shell out to `docker compose ps` inside each stack directory, so the host needs the
+Docker CLI and access to the Docker daemon.
 
-```bash
-# Option 1 — p4n4-iot already running
-docker compose up -d   # in p4n4-api/
-
-# Option 2 — standalone
-docker network create p4n4-net
-docker compose up -d
-
-# Option 3 — via CLI (once p4n4 up --api is implemented)
-p4n4 up --api
-```
+The containerized deployment (attaching to `p4n4-net` as an external network, with
+`docker compose up -d` in this repo and `p4n4 up --api` in the CLI) is planned along
+with the upstream-proxy features.
 
 ---
 
@@ -323,7 +327,7 @@ p4n4 up --api
 
 - [p4n4 Platform](https://github.com/raisga/p4n4) — umbrella repo and architecture docs
 - [DESIGN.md](DESIGN.md) — full API design document (tech stack, schemas, milestones)
-- [p4n4-lib](https://github.com/raisga/p4n4-lib) — shared library (models, clients, auth) consumed by this package
+- [p4n4-lib](https://github.com/raisga/p4n4-lib) — shared library (manifest, layout, validation, Compose wrappers) consumed by this package
 - [p4n4-iot](https://github.com/raisga/p4n4-iot) — IoT stack (MQTT, InfluxDB, Node-RED, Grafana)
 - [p4n4-ai](https://github.com/raisga/p4n4-ai) — GenAI stack (Ollama, Letta, n8n)
 - [p4n4-edge](https://github.com/raisga/p4n4-edge) — Edge AI stack (Edge Impulse runner)
