@@ -10,25 +10,29 @@ Part of the [p4n4](https://github.com/raisga/p4n4) platform — an EdgeAI + GenA
 
 ## Status
 
-**v0.1** implements a read-only project/stack/edge-metrics surface built on
-[`p4n4-lib`](https://github.com/raisga/p4n4-lib) (manifest, layout, validation, and
-Compose status — both flat and multi-layer project layouts):
+**v0.1** implements user sign-in (JWT) and a read-only project/stack/edge-metrics surface
+built on [`p4n4-lib`](https://github.com/raisga/p4n4-lib) (manifest, layout, validation, and
+Compose status — both flat and multi-layer project layouts). Endpoints marked 🔒 need an
+`operator` or `admin` access token:
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness probe |
 | `GET` | `/ready` | Readiness probe: project found and Docker reachable (`503` otherwise) |
 | `GET` | `/api/v1/version` | API, API-version and `p4n4-lib` versions |
-| `GET` | `/api/v1/project` | Manifest, layout (`flat`/`multi`), and per-stack directories |
-| `GET` | `/api/v1/project/validate` | Run `p4n4_lib.validate` checks; returns `{ok, passed, errors}` |
-| `GET` | `/api/v1/stacks` | Compose service status per stack (`503` if Docker is unreachable) |
-| `GET` | `/api/v1/stacks/{stack}` | One stack's service status (404 if not enabled) |
-| `GET` | `/api/v1/edge/metrics` | CPU, memory, disk, temperature, uptime and load of the host (the edge device) |
+| `POST` | `/api/v1/auth/token` | Username + password → access token (1 h) + refresh token (7 d) |
+| `POST` | `/api/v1/auth/refresh` | Refresh token → new pair (each refresh token works once) |
+| `POST` | `/api/v1/auth/logout` | Revoke the refresh token and its whole sign-in |
+| `GET` | `/api/v1/auth/me` | The signed-in user and role (🔒 any role) |
+| `GET` | `/api/v1/project` | 🔒 Manifest, layout (`flat`/`multi`), and per-stack directories |
+| `GET` | `/api/v1/project/validate` | 🔒 Run `p4n4_lib.validate` checks; returns `{ok, passed, errors}` |
+| `GET` | `/api/v1/stacks` | 🔒 Compose service status per stack (`503` if Docker is unreachable) |
+| `GET` | `/api/v1/stacks/{stack}` | 🔒 One stack's service status (404 if not enabled) |
+| `GET` | `/api/v1/edge/metrics` | 🔒 CPU, memory, disk, temperature, uptime and load of the host (the edge device) |
 | `GET` | `/swagger-ui`, `/openapi.json` | Interactive docs / OpenAPI spec |
 
-Everything else in this README (auth, device registry, telemetry, SSE, agents, MQTT,
-metrics) is the **design target**, not yet implemented. State-changing endpoints
-(stack up/down, secret rotation) are deliberately deferred until auth lands.
+Everything else in this README (device API keys and registry, telemetry, SSE, agents, MQTT,
+metrics) is the **design target**, not yet implemented. See [TODO.md](TODO.md) for the plan.
 
 ---
 
@@ -133,26 +137,50 @@ For local development only:
    export P4N4_PROJECT_DIR=~/projects/my-p4n4-project
    ```
 
-3. **Start the API**
+3. **Create the first admin** (prompts for a password, at least 10 characters)
+
+   ```bash
+   uv run p4n4-api users add admin --role admin
+   ```
+
+4. **Start the API**
 
    ```bash
    uv run p4n4-api
    # or: uv run uvicorn p4n4_api.main:app --reload --port 8000
    ```
 
-4. **Verify it is running**
+5. **Verify it is running**
 
    ```bash
    curl http://localhost:8000/health
    # {"status":"ok"}
 
-   curl http://localhost:8000/api/v1/project
-   curl http://localhost:8000/api/v1/project/validate
-   curl http://localhost:8000/api/v1/stacks
+   TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/token \
+     -H 'Content-Type: application/json' \
+     -d '{"username": "admin", "password": "<password>"}' | jq -r .access_token)
 
-   # Open the interactive API docs
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/project
+   curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/stacks
+
+   # Open the interactive API docs (paste the token under "Authorize")
    open http://localhost:8000/swagger-ui
    ```
+
+### Users
+
+```bash
+p4n4-api users list
+p4n4-api users add alice                 # operator by default; --role admin
+p4n4-api users passwd alice              # also signs alice out everywhere
+p4n4-api users role alice admin
+p4n4-api users remove alice
+# Scripts: echo "$PASSWORD" | p4n4-api users add alice --password-stdin
+```
+
+`operator` can read everything the API serves today; `admin` can also do what's planned
+for admins (device registry, stack control). A user's role is read on every request, so role
+changes and removals apply immediately.
 
 ---
 
@@ -166,10 +194,13 @@ All configuration is read from environment variables. Currently used:
 | `P4N4_API_HOST` | Bind address (default: `127.0.0.1`) |
 | `P4N4_API_PORT` | HTTP listen port (default: `8000`) |
 | `P4N4_API_CORS_ORIGINS` | Comma-separated browser origins allowed to call the API, e.g. `http://localhost:8088`. Empty (default) disables CORS. No credentials are allowed, so `*` is accepted |
+| `P4N4_API_DATA_DIR` | Where the API keeps its SQLite database (`api.db`: users, refresh tokens) and generated JWT secret (default: `$XDG_DATA_HOME/p4n4-api`, i.e. `~/.local/share/p4n4-api`). Back it up; created owner-only |
+| `P4N4_API_JWT_SECRET` | HS256 signing key, at least 32 characters (`openssl rand -hex 32`). Default: generated once into `$P4N4_API_DATA_DIR/jwt_secret`. Changing it signs everyone out |
+| `P4N4_API_AUTH` | `off` disables auth: every request is treated as an admin. **Development only**; logs a warning at startup |
 
-Planned (for the upstream-proxy features below): `P4N4_API_JWT_SECRET`, `INFLUXDB_URL`,
+Planned (for the upstream-proxy features below): `INFLUXDB_URL`,
 `INFLUXDB_TOKEN`, `MQTT_HOST`, `MQTT_USER`/`MQTT_PASSWORD`, `OLLAMA_URL`, `LETTA_URL`,
-`LETTA_SERVER_PASSWORD`, `EDGE_RUNNER_URL`, `P4N4_API_DATABASE_URL`.
+`LETTA_SERVER_PASSWORD`, `EDGE_RUNNER_URL`.
 
 ---
 
@@ -192,8 +223,10 @@ Authentication: `Authorization: Bearer <jwt>` (except public endpoints)
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/v1/auth/token` | Exchange API key for JWT |
-| `POST` | `/api/v1/auth/refresh` | Rotate access token |
+| `POST` | `/api/v1/auth/token` | Exchange a username + password (people) for a JWT pair; device API keys in M3 |
+| `POST` | `/api/v1/auth/refresh` | Exchange a refresh token for a new pair (single use) |
+| `POST` | `/api/v1/auth/logout` | Revoke a refresh token and every token from the same sign-in |
+| `GET` | `/api/v1/auth/me` | Current user and role |
 
 ### Stack health (operator+)
 
@@ -271,20 +304,26 @@ Current (v0.1):
 p4n4-api/
 ├── pyproject.toml
 ├── p4n4_api/
-│   ├── main.py              # FastAPI app factory + `p4n4-api` entrypoint
+│   ├── main.py              # FastAPI app factory, startup checks, role guards
+│   ├── cli.py               # `p4n4-api` command: serve (default) and `users`
 │   ├── config.py            # Settings from environment variables
 │   ├── deps.py              # Project resolution dependency (p4n4_lib.manifest)
+│   ├── db.py                # SQLite database and schema migrations
+│   ├── users.py             # Accounts, roles, argon2id password hashing
+│   ├── auth.py              # JWT issue/verify, refresh rotation, role dependencies, rate limit
+│   ├── docker.py            # Docker daemon check, container start times
 │   └── routes/              # One APIRouter per API group
-│       ├── health.py        # GET /health
+│       ├── auth.py          # /api/v1/auth/token, /refresh, /logout, /me
+│       ├── health.py        # GET /health, /ready, /api/v1/version
 │       ├── project.py       # GET /api/v1/project, /project/validate
 │       ├── stacks.py        # GET /api/v1/stacks, /stacks/{stack}
 │       └── edge.py          # GET /api/v1/edge/metrics
 └── tests/
 ```
 
-Planned additions as the upstream-proxy features land: `auth/` (JWT), `clients/`
+Planned additions as the upstream-proxy features land: `clients/`
 (async HTTP/MQTT clients per upstream service), `models/` (Pydantic schemas),
-`db/` + `alembic/` (device registry), `Dockerfile` + `docker-compose.yml`.
+`Dockerfile` + `docker-compose.yml`.
 
 ---
 
@@ -336,10 +375,12 @@ with the upstream-proxy features.
 
 ## Security
 
-- **JWT** — HS256 signed tokens with role claims (`device`, `operator`, `admin`). Access tokens expire in 1 hour; refresh tokens in 7 days.
+- **JWT** — HS256 signed tokens. Access tokens expire in 1 hour; refresh tokens in 7 days. Roles are `operator` and `admin` (`device` arrives with the device registry); the role is read from the database on every request, not trusted from the token.
+- **Refresh rotation** — each refresh token works once. Reusing one revokes every token from that sign-in. Password changes sign the user out everywhere. Signing out revokes refresh tokens; an access token stays valid until it expires (≤ 1 h).
+- **Passwords** — argon2id, at least 10 characters. Unknown usernames take as long to reject as wrong passwords.
 - **API keys** — stored as argon2id hashes; plaintext shown only once at device registration.
 - **Secrets** — never stored in the database; all upstream credentials are injected via environment variables.
-- **Rate limiting** — per-subject token-bucket (in-memory); no Redis dependency.
+- **Rate limiting** — `/auth/token` and `/auth/refresh`: 10 attempts per client address, then one every 6 s (in-memory token bucket; `429` + `Retry-After`).
 - **CORS** — off by default; allowlist via `P4N4_API_CORS_ORIGINS`. Credentials (cookies) are never allowed: auth uses the `Authorization` header.
 - **Port exposure** — for production, remove the `8000` host-port binding and front with a reverse proxy (nginx, Caddy, Traefik).
 

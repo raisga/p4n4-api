@@ -11,12 +11,12 @@ Pending work for `p4n4-api`. The [README](README.md) describes the target surfac
 | Project info / validation | ✅ Working | `GET /api/v1/project`, `GET /api/v1/project/validate`, built on `p4n4-lib` (flat and multi-layer layouts). |
 | Stack status | ✅ Working | `GET /api/v1/stacks[/{stack}]` shells out to `docker compose ps` per stack, with image, version, ports and uptime per service, and `503` when Docker is unreachable. The dashboard's Services, Home and Clients tabs already use it, and fall back to port probes when it's unreachable. |
 | Health | ✅ Working | `/health`, `/ready` (project + Docker), `/api/v1/version`. |
-| Auth | ❌ Missing | No JWT, roles or API keys. The dashboard's admin/client picker is a placeholder until this lands (`dashboard/lib/core/session.dart`). |
+| Auth | ✅ Working (people) | Username/password sign-in → JWT, `operator`/`admin` roles, refresh rotation, `p4n4-api users` CLI. Device API keys come with M3. **The dashboard doesn't sign in yet**, so its status calls now get `401` and it falls back to port probes. |
 | Upstream proxies | ❌ Missing | Nothing yet for InfluxDB, MQTT, Ollama, Letta or the Edge Impulse runner. |
 | Edge metrics | ✅ Working | `GET /api/v1/edge/metrics` via `psutil`, in the dashboard's contract. `inference_ms` waits for M6. |
 | CORS | ✅ Working | `P4N4_API_CORS_ORIGINS` allowlist; off by default. |
 | Packaging | ❌ Missing | Runs on the host only and binds `127.0.0.1`. No Dockerfile or compose file. |
-| Tests / CI | ✅ Working | 22 tests with synthetic projects and a stubbed Compose client. CI runs ruff and pytest on 3.11–3.13. |
+| Tests / CI | ✅ Working | 64 tests with synthetic projects and a stubbed Compose client. CI runs ruff and pytest on 3.11–3.13. |
 
 ## Housekeeping
 
@@ -54,17 +54,24 @@ Small items the dashboard needs now. They're read-only or config-only, so they d
 
 Gates every state-changing endpoint below.
 
-- [ ] Roles `device`, `operator`, `admin` as JWT claims (HS256, `P4N4_API_JWT_SECRET`). Access token 1 h, refresh token 7 d.
-- [ ] `POST /api/v1/auth/token` (API key → JWT) and `POST /api/v1/auth/refresh`.
-- [ ] Human logins for the dashboard: API keys suit devices, not people. Decide between operator/admin accounts (username + argon2id password) or admin-issued personal API keys. **🖥 dashboard** needs one of these to replace the role picker.
-- [ ] FastAPI dependencies `require_role("operator")` etc. Decide which existing endpoints stay public: `/health` and `/ready` yes; `/project` and `/stacks` should become operator+.
-- [ ] Bootstrap: how the first admin credential is created (CLI command, or printed once on first start). Coordinate with `p4n4 init` / `p4n4-lib` secrets.
-- [ ] Rate limiting on `/auth/*` (per-subject token bucket, in memory).
-- [ ] Tests: expired/forged tokens, role checks on every protected route.
+- [x] HS256 JWTs (`P4N4_API_JWT_SECRET`, at least 32 characters, or generated once into the data dir). Access token 1 h, refresh token 7 d.
+- [x] People sign in with **operator/admin accounts** (username + argon2id password) in SQLite (`P4N4_API_DATA_DIR/api.db`). Admin-issued personal API keys were the alternative; API keys stay for devices (M3).
+- [x] `POST /api/v1/auth/token`, `/auth/refresh` (single-use refresh tokens; reuse revokes the whole sign-in), `/auth/logout`, `GET /auth/me`.
+- [x] `require_role("operator")` / `require_role("admin")`, ranked. `/health`, `/ready`, `/api/v1/version` and the docs stay public; `/project`, `/stacks` and `/edge/metrics` need operator+. Role and a password-change counter are read from the DB on every request, so changes apply immediately.
+- [x] Bootstrap: `p4n4-api users add admin --role admin`; the server logs a hint at startup while there are no users. Also `users list|passwd|role|remove`.
+- [x] Rate limiting on `/auth/token` and `/auth/refresh` (10 per client address, then 1 per 6 s).
+- [x] Tests: expired, forged (wrong key, `alg: none`, garbage), wrong-type and revoked tokens; role ranking; refresh reuse; password/role changes and deleted users; rate limit; CLI.
+- [ ] **🖥 dashboard** Sign in: replace the role picker (`lib/core/session.dart`) with a username/password form, keep tokens in `flutter_secure_storage` (`secretKeys`), send `Authorization: Bearer` on API calls, refresh on `401`, and take the role from `/auth/me`. Until this ships, run the API with `P4N4_API_AUTH=off` to keep the dashboard's API status working.
+- [ ] **🖥 dashboard** Map roles: the dashboard's *client* view ↔ `operator`, *admin* ↔ `admin`. Decide whether a separate read-only `viewer` role is needed for client accounts before giving operators state-changing rights in M4.
+- [ ] Admin user-management endpoints (`GET/POST/PATCH/DELETE /api/v1/users`), so admins can create client accounts from the dashboard instead of the server's shell. Plus self-service `POST /api/v1/auth/password`.
+- [ ] Behind a reverse proxy (the dashboard's nginx), every client shares one address, so one attacker can fill the sign-in rate limit for everyone. Add a trusted-proxy setting that reads `X-Forwarded-For`, and/or also limit per username.
+- [ ] `p4n4 init` could create the first admin (and print its password once) so a new project needs no extra step. Coordinate with `p4n4-cli`.
+- [ ] Sign-out leaves the access token valid until it expires (≤ 1 h). If that's too long, add a deny-list of revoked access-token IDs, or shorten `ACCESS_TTL`.
 
 ### M3: Device registry
 
-- [ ] SQLite via SQLAlchemy + Alembic (`P4N4_API_DATABASE_URL`). Where the DB file lives on host vs. container.
+- [ ] Devices table in the existing SQLite database (`p4n4_api/db.py`: append to `MIGRATIONS`). M2 used stdlib `sqlite3` with versioned migrations instead of the SQLAlchemy + Alembic originally planned: two dependencies fewer on a Pi, and enough for a few tables. Revisit if the schema grows. In a container, `P4N4_API_DATA_DIR` must be a volume.
+- [ ] Add `device` to the roles (outside the operator/admin ranking: devices can only ingest) and accept `{"api_key": ...}` at `/auth/token`.
 - [ ] `GET/POST /api/v1/devices`, `GET/PATCH/DELETE /api/v1/devices/{id}` (admin writes, operator reads, paginated).
 - [ ] API key rotation. The README has it as `GET /devices/{id}/key`; it changes state, so make it `POST /devices/{id}/key`.
 - [ ] Keys stored as argon2id hashes, plaintext shown once.

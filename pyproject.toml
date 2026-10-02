@@ -26,6 +26,8 @@ dependencies = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",
   "psutil>=5.9",
+  "pyjwt>=2.8",
+  "argon2-cffi>=23.1",
 ]
 
 [project.optional-dependencies]
@@ -37,7 +39,7 @@ dev = [
 ]
 
 [project.scripts]
-p4n4-api = "p4n4_api.main:run"
+p4n4-api = "p4n4_api.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/raisga/p4n4-api"
