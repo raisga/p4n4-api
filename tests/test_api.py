@@ -117,6 +117,161 @@ def test_unknown_stack_404(client, multi_project):
     assert r.status_code == 404
 
 
+def test_stacks_503_when_docker_down(client, multi_project, monkeypatch):
+    # The dashboard treats any non-200 as "API down" and falls back to port probes.
+    monkeypatch.setattr("p4n4_api.docker.daemon_error", lambda: "cannot connect")
+    for path in ("/api/v1/stacks", "/api/v1/stacks/iot"):
+        r = client.get(path)
+        assert r.status_code == 503
+        assert "cannot connect" in r.json()["detail"]
+
+
+def test_stack_service_details(client, multi_project, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    full_id = "abc123" + "0" * 58
+    started = datetime.now(UTC) - timedelta(hours=2)
+    monkeypatch.setattr("p4n4_api.docker.started_at", lambda ids: {full_id: started})
+    publishers = [
+        {"URL": "0.0.0.0", "TargetPort": 1883, "PublishedPort": 1883, "Protocol": "tcp"},
+        {"URL": "::", "TargetPort": 1883, "PublishedPort": 1883, "Protocol": "tcp"},
+        {"URL": "", "TargetPort": 9001, "PublishedPort": 0, "Protocol": "tcp"},
+    ]
+    monkeypatch.setattr(
+        "p4n4_api.routes.stacks.compose.ps",
+        _fake_ps(
+            {
+                "iot": [
+                    {
+                        "ID": "abc123",
+                        "Service": "mosquitto",
+                        "State": "running",
+                        "Health": "healthy",
+                        "Image": "eclipse-mosquitto:2.0.18",
+                        "Status": "Up 2 hours (healthy)",
+                        "ExitCode": 0,
+                        "Publishers": publishers,
+                    },
+                    {
+                        "ID": "def456",
+                        "Service": "influxdb",
+                        "State": "exited",
+                        "Image": "influxdb@sha256:" + "f" * 64,
+                        "Status": "Exited (1) 3 minutes ago",
+                        "ExitCode": 1,
+                    },
+                ]
+            }
+        ),
+    )
+    services = {s["name"]: s for s in client.get("/api/v1/stacks/iot").json()["services"]}
+
+    mqtt = services["mosquitto"]
+    assert mqtt["image"] == "eclipse-mosquitto:2.0.18"
+    assert mqtt["version"] == "2.0.18"
+    assert mqtt["status"] == "Up 2 hours (healthy)"
+    assert mqtt["exit_code"] is None
+    assert mqtt["ports"] == [{"published": 1883, "target": 1883, "protocol": "tcp"}]
+    assert 7190 <= mqtt["uptime_s"] <= 7210
+    assert mqtt["started_at"] == started.isoformat()
+
+    influx = services["influxdb"]
+    assert influx["version"] is None
+    assert influx["exit_code"] == 1
+    assert influx["uptime_s"] is None and influx["started_at"] is None
+    assert influx["ports"] == []
+
+
+def test_stack_legacy_compose_fields(client, multi_project, monkeypatch):
+    # docker-compose v1 output (built from docker inspect) has no Image/Status/ID.
+    monkeypatch.setattr(
+        "p4n4_api.routes.stacks.compose.ps",
+        _fake_ps({"ai": [{"Name": "p4n4-ollama", "Service": "ollama", "State": "running"}]}),
+    )
+    svc = client.get("/api/v1/stacks/ai").json()["services"][0]
+    assert svc["name"] == "ollama"
+    assert svc["image"] is None and svc["version"] is None and svc["uptime_s"] is None
+
+
+def test_image_version():
+    from p4n4_api.routes.stacks import _image_version
+
+    assert _image_version("influxdb:2.7") == "2.7"
+    assert _image_version("ghcr.io/raisga/p4n4-dashboard:1.0.0") == "1.0.0"
+    assert _image_version("localhost:5000/runner") is None
+    assert _image_version("localhost:5000/runner:v3") == "v3"
+    assert _image_version("ollama/ollama") is None
+    assert _image_version("influxdb:2.7@sha256:" + "f" * 64) == "2.7"
+
+
+# ── /ready, /api/v1/version ───────────────────────────────────────────────────
+
+
+def test_ready(client, flat_project):
+    r = client.get("/ready")
+    assert r.status_code == 200
+    assert r.json() == {
+        "status": "ready",
+        "checks": {"project": {"ok": True}, "docker": {"ok": True}},
+    }
+
+
+def test_ready_reports_failures(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("P4N4_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr("p4n4_api.docker.daemon_error", lambda: "cannot connect")
+    r = client.get("/ready")
+    assert r.status_code == 503
+    checks = r.json()["checks"]
+    assert checks["docker"] == {"ok": False, "detail": "cannot connect"}
+    assert checks["project"]["ok"] is False
+    assert ".p4n4.json" in checks["project"]["detail"]
+
+
+def test_version(client):
+    from p4n4_api import __version__
+
+    body = client.get("/api/v1/version").json()
+    assert body["version"] == __version__
+    assert body["api"] == "v1"
+    assert body["p4n4_lib"]
+
+
+# ── CORS ──────────────────────────────────────────────────────────────────────
+
+
+def _preflight(client, origin):
+    return client.options(
+        "/api/v1/stacks",
+        headers={"Origin": origin, "Access-Control-Request-Method": "GET"},
+    )
+
+
+def test_cors_off_by_default(client):
+    r = client.get("/health", headers={"Origin": "http://localhost:8088"})
+    assert "access-control-allow-origin" not in r.headers
+
+
+def test_cors_allowlist(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from p4n4_api.main import create_app
+
+    monkeypatch.setenv("P4N4_API_CORS_ORIGINS", "http://localhost:8088, http://pi.local:8088/")
+    client = TestClient(create_app())
+
+    r = _preflight(client, "http://pi.local:8088")
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == "http://pi.local:8088"
+    assert "access-control-allow-credentials" not in r.headers
+
+    r = client.get("/health", headers={"Origin": "http://localhost:8088"})
+    assert r.headers["access-control-allow-origin"] == "http://localhost:8088"
+
+    assert _preflight(client, "http://evil.example").status_code == 400
+    r = client.get("/health", headers={"Origin": "http://evil.example"})
+    assert "access-control-allow-origin" not in r.headers
+
+
 # ── /api/v1/edge/metrics ──────────────────────────────────────────────────────
 
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from p4n4_api import __version__
+from p4n4_api.config import load_settings
 from p4n4_api.routes import edge, health, project, stacks
 
 
@@ -15,9 +17,20 @@ def create_app() -> FastAPI:
         version=__version__,
         docs_url="/swagger-ui",
     )
+    origins = load_settings().cors_origins
+    if origins:
+        # Bearer tokens go in the Authorization header, so no cookies: credentials stay off,
+        # which also keeps a "*" origin safe.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(origins),
+            allow_methods=["GET", "POST", "PATCH", "DELETE"],
+            allow_headers=["Authorization", "Content-Type"],
+        )
     app.include_router(health.router)
 
     api_v1 = APIRouter(prefix="/api/v1")
+    api_v1.include_router(health.version_router)
     api_v1.include_router(project.router)
     api_v1.include_router(stacks.router)
     api_v1.include_router(edge.router)
@@ -31,8 +44,6 @@ app = create_app()
 def run() -> None:
     """Console-script entrypoint: serve the API with uvicorn."""
     import uvicorn
-
-    from p4n4_api.config import load_settings
 
     settings = load_settings()
     uvicorn.run("p4n4_api.main:app", host=settings.host, port=settings.port)

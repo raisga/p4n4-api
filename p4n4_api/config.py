@@ -13,6 +13,8 @@ class Settings:
     project_dir: Path | None
     host: str
     port: int
+    # Browser origins allowed to call the API; empty disables CORS
+    cors_origins: tuple[str, ...]
 
 
 def load_settings() -> Settings:
@@ -22,4 +24,9 @@ def load_settings() -> Settings:
         project_dir=Path(project_dir).expanduser() if project_dir else None,
         host=os.environ.get("P4N4_API_HOST", "127.0.0.1"),
         port=int(os.environ.get("P4N4_API_PORT", "8000")),
+        cors_origins=tuple(
+            o.strip().rstrip("/")
+            for o in os.environ.get("P4N4_API_CORS_ORIGINS", "").split(",")
+            if o.strip()
+        ),
     )

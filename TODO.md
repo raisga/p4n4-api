@@ -9,14 +9,14 @@ Pending work for `p4n4-api`. The [README](README.md) describes the target surfac
 | Area | Status | Notes |
 |------|--------|-------|
 | Project info / validation | ✅ Working | `GET /api/v1/project`, `GET /api/v1/project/validate`, built on `p4n4-lib` (flat and multi-layer layouts). |
-| Stack status | ✅ Working | `GET /api/v1/stacks[/{stack}]` shells out to `docker compose ps` per stack. The dashboard's Services, Home and Clients tabs already use it, and fall back to port probes when it's unreachable. |
-| Health | ⚠️ Partial | `/health` only. No `/ready`. |
+| Stack status | ✅ Working | `GET /api/v1/stacks[/{stack}]` shells out to `docker compose ps` per stack, with image, version, ports and uptime per service, and `503` when Docker is unreachable. The dashboard's Services, Home and Clients tabs already use it, and fall back to port probes when it's unreachable. |
+| Health | ✅ Working | `/health`, `/ready` (project + Docker), `/api/v1/version`. |
 | Auth | ❌ Missing | No JWT, roles or API keys. The dashboard's admin/client picker is a placeholder until this lands (`dashboard/lib/core/session.dart`). |
 | Upstream proxies | ❌ Missing | Nothing yet for InfluxDB, MQTT, Ollama, Letta or the Edge Impulse runner. |
 | Edge metrics | ✅ Working | `GET /api/v1/edge/metrics` via `psutil`, in the dashboard's contract. `inference_ms` waits for M6. |
-| CORS | ❌ Missing | `P4N4_API_CORS_ORIGINS` is documented but not implemented. |
+| CORS | ✅ Working | `P4N4_API_CORS_ORIGINS` allowlist; off by default. |
 | Packaging | ❌ Missing | Runs on the host only and binds `127.0.0.1`. No Dockerfile or compose file. |
-| Tests / CI | ✅ Working | 13 tests with synthetic projects and a stubbed Compose client. CI runs ruff and pytest on 3.11–3.13. |
+| Tests / CI | ✅ Working | 22 tests with synthetic projects and a stubbed Compose client. CI runs ruff and pytest on 3.11–3.13. |
 
 ## Housekeeping
 
@@ -25,7 +25,8 @@ Pending work for `p4n4-api`. The [README](README.md) describes the target surfac
 - [ ] Add response models (Pydantic) for the existing endpoints so `/openapi.json` documents real schemas instead of `dict`. The dashboard parses `stacks[].services[].{name,state,health}`, so treat that shape as a contract and test it.
 - [ ] Move settings to `pydantic-settings` (the README already names it) before the env var list grows.
 - [ ] Standard error body (`{"error": {"code", "message"}}`) and exception handlers, so clients get one error shape.
-- [ ] Decide how `compose.ps` failures surface (Docker CLI missing, daemon down, permission denied): today they could become a bare 500. Return a per-stack `error` field, or a 503, and test both.
+- [x] `compose.ps` failures: Docker CLI missing, daemon down or Compose missing now return `503` from `/stacks` (checked with `docker version` first), so the dashboard falls back to port probes instead of showing every service as stopped.
+  - [ ] Root cause is in `p4n4-lib`: `compose.ps` ignores Compose's exit code and returns `[]`. Make it raise, then drop the extra `docker version` call per request.
 - [ ] Structured logging with a request ID (`X-Request-ID` in and out).
 
 ## Milestones
@@ -43,10 +44,11 @@ Small items the dashboard needs now. They're read-only or config-only, so they d
   - [ ] `disk_percent` is for `/`. Consider a `P4N4_API_DISK_PATH` setting if data lives on another volume (e.g. an SSD for InfluxDB).
   - `inference_ms` from the Edge Impulse runner's last result, once M6 exists. Leave it out until then.
   - Once containerized, host metrics need `/proc` and `/sys` mounted read-only (or `pid: host`). Document it.
-- [ ] **🖥 dashboard** `P4N4_API_CORS_ORIGINS`: FastAPI `CORSMiddleware` with an explicit allowlist and no `*` alongside credentials. Needed for the dashboard's web dev server and for the **Clients** tab on web, which calls other deployments' APIs cross-origin (`dashboard/SERVICE_INTEGRATION.md` §5.3).
-- [ ] **🖥 dashboard** Richer stack status: add uptime, image and version per service (`docker compose ps --format json` already has `Image`, `Status`, `CreatedAt`), so Services can show more than up/down.
-- [ ] `GET /ready`: checks that the project resolves and Docker is reachable. Add InfluxDB and MQTT checks once those clients exist.
-- [ ] `GET /api/v1/version` (or add `version` to `/health`) so the dashboard and CLI can detect API features instead of guessing.
+- [x] **🖥 dashboard** `P4N4_API_CORS_ORIGINS`: FastAPI `CORSMiddleware` with an explicit allowlist and no `*` alongside credentials. Needed for the dashboard's web dev server and for the **Clients** tab on web, which calls other deployments' APIs cross-origin (`dashboard/SERVICE_INTEGRATION.md` §5.3).
+- [x] **🖥 dashboard** Richer stack status: `image`, `version`, `status`, `exit_code`, `ports`, `started_at`, `uptime_s` per service (uptime from one `docker inspect` per stack).
+  - [ ] Dashboard side: show these in Services (its `ComposeService` ignores unknown fields, so nothing breaks meanwhile).
+- [x] `GET /ready`: checks that the project resolves and Docker is reachable. Add InfluxDB and MQTT checks once those clients exist.
+- [x] `GET /api/v1/version` so the dashboard and CLI can detect API features instead of guessing.
 
 ### M2: Auth and roles
 

@@ -17,9 +17,11 @@ Compose status — both flat and multi-layer project layouts):
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness probe |
+| `GET` | `/ready` | Readiness probe: project found and Docker reachable (`503` otherwise) |
+| `GET` | `/api/v1/version` | API, API-version and `p4n4-lib` versions |
 | `GET` | `/api/v1/project` | Manifest, layout (`flat`/`multi`), and per-stack directories |
 | `GET` | `/api/v1/project/validate` | Run `p4n4_lib.validate` checks; returns `{ok, passed, errors}` |
-| `GET` | `/api/v1/stacks` | Compose service status per stack |
+| `GET` | `/api/v1/stacks` | Compose service status per stack (`503` if Docker is unreachable) |
 | `GET` | `/api/v1/stacks/{stack}` | One stack's service status (404 if not enabled) |
 | `GET` | `/api/v1/edge/metrics` | CPU, memory, disk, temperature, uptime and load of the host (the edge device) |
 | `GET` | `/swagger-ui`, `/openapi.json` | Interactive docs / OpenAPI spec |
@@ -163,6 +165,7 @@ All configuration is read from environment variables. Currently used:
 | `P4N4_PROJECT_DIR` | p4n4 project directory to serve (walks up to `.p4n4.json`; default: the server's cwd) |
 | `P4N4_API_HOST` | Bind address (default: `127.0.0.1`) |
 | `P4N4_API_PORT` | HTTP listen port (default: `8000`) |
+| `P4N4_API_CORS_ORIGINS` | Comma-separated browser origins allowed to call the API, e.g. `http://localhost:8088`. Empty (default) disables CORS. No credentials are allowed, so `*` is accepted |
 
 Planned (for the upstream-proxy features below): `P4N4_API_JWT_SECRET`, `INFLUXDB_URL`,
 `INFLUXDB_TOKEN`, `MQTT_HOST`, `MQTT_USER`/`MQTT_PASSWORD`, `OLLAMA_URL`, `LETTA_URL`,
@@ -180,7 +183,7 @@ Authentication: `Authorization: Bearer <jwt>` (except public endpoints)
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness probe |
-| `GET` | `/ready` | Readiness probe (checks DB + MQTT) |
+| `GET` | `/ready` | Readiness probe (project + Docker today; DB + MQTT once they exist) |
 | `GET` | `/metrics` | Prometheus metrics |
 | `GET` | `/openapi.json` | OpenAPI 3.1 spec |
 | `GET` | `/swagger-ui` | Swagger UI |
@@ -198,6 +201,11 @@ Authentication: `Authorization: Bearer <jwt>` (except public endpoints)
 |---|---|---|
 | `GET` | `/api/v1/stacks` | Health of all platform stacks |
 | `GET` | `/api/v1/stacks/{stack}` | Health of one stack (`iot`, `ai`, `edge`) |
+
+Each service reports `name`, `state`, `health`, plus `image`, `version` (the image tag),
+`status` (Docker's text, e.g. `Up 2 hours (healthy)`), `exit_code` (stopped services only),
+`ports` (published), `started_at` and `uptime_s` (running services only). Fields Docker
+doesn't provide (e.g. with standalone `docker-compose` v1) are `null`.
 
 ### Devices (admin for writes, operator for reads)
 
@@ -332,7 +340,7 @@ with the upstream-proxy features.
 - **API keys** — stored as argon2id hashes; plaintext shown only once at device registration.
 - **Secrets** — never stored in the database; all upstream credentials are injected via environment variables.
 - **Rate limiting** — per-subject token-bucket (in-memory); no Redis dependency.
-- **CORS** — permissive in development, allowlist in production (set via `P4N4_API_CORS_ORIGINS`).
+- **CORS** — off by default; allowlist via `P4N4_API_CORS_ORIGINS`. Credentials (cookies) are never allowed: auth uses the `Authorization` header.
 - **Port exposure** — for production, remove the `8000` host-port binding and front with a reverse proxy (nginx, Caddy, Traefik).
 
 ---

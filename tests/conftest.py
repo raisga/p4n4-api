@@ -43,3 +43,10 @@ def multi_project(tmp_path, monkeypatch):
         _populate_layer(tmp_path / name, name)
     monkeypatch.setenv("P4N4_PROJECT_DIR", str(tmp_path))
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def docker_up(monkeypatch):
+    """Pretend the Docker daemon is reachable; tests override these to simulate failures."""
+    monkeypatch.setattr("p4n4_api.docker.daemon_error", lambda: None)
+    monkeypatch.setattr("p4n4_api.docker.started_at", lambda ids: {})
