@@ -115,3 +115,57 @@ def test_single_stack(client, multi_project, monkeypatch):
 def test_unknown_stack_404(client, multi_project):
     r = client.get("/api/v1/stacks/nope")
     assert r.status_code == 404
+
+
+# ── /api/v1/edge/metrics ──────────────────────────────────────────────────────
+
+
+def _sensor(current):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(label="", current=current, high=None, critical=None)
+
+
+def test_edge_metrics_contract(client, tmp_path, monkeypatch):
+    # Host-level: works without a p4n4 project.
+    monkeypatch.setenv("P4N4_PROJECT_DIR", str(tmp_path))
+    r = client.get("/api/v1/edge/metrics")
+    assert r.status_code == 200
+    body = r.json()
+    for key in ("cpu_percent", "mem_percent", "mem_used_mb", "mem_total_mb", "disk_percent"):
+        assert isinstance(body[key], int | float)
+    assert 0 <= body["cpu_percent"] <= 100
+    assert 0 <= body["mem_percent"] <= 100
+    assert body["mem_used_mb"] <= body["mem_total_mb"]
+    assert body["uptime_s"] > 0
+    assert len(body["load"]) == 3
+    assert None not in body.values()
+
+
+def test_edge_metrics_prefers_cpu_sensor(client, monkeypatch):
+    from p4n4_api.routes import edge
+
+    sensors = {"acpitz": [_sensor(25.0)], "nvme": [_sensor(30.0)], "coretemp": [_sensor(45.04)]}
+    monkeypatch.setattr(edge.psutil, "sensors_temperatures", lambda: sensors, raising=False)
+    assert client.get("/api/v1/edge/metrics").json()["temp_c"] == 45.0
+
+
+def test_edge_metrics_matches_unknown_cpu_sensor(client, monkeypatch):
+    from p4n4_api.routes import edge
+
+    sensors = {"acpitz": [_sensor(25.0)], "rockchip_cpu": [], "a53_cpu_thermal": [_sensor(52.3)]}
+    monkeypatch.setattr(edge.psutil, "sensors_temperatures", lambda: sensors, raising=False)
+    assert client.get("/api/v1/edge/metrics").json()["temp_c"] == 52.3
+
+
+def test_edge_metrics_omits_unknown_temp(client, monkeypatch):
+    from p4n4_api.routes import edge
+
+    monkeypatch.setattr(
+        edge.psutil, "sensors_temperatures", lambda: {"acpitz": [_sensor(25.0)]}, raising=False
+    )
+    assert "temp_c" not in client.get("/api/v1/edge/metrics").json()
+
+    # macOS / Windows: psutil has no sensors_temperatures at all.
+    monkeypatch.delattr(edge.psutil, "sensors_temperatures", raising=False)
+    assert "temp_c" not in client.get("/api/v1/edge/metrics").json()

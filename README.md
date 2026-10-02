@@ -10,7 +10,7 @@ Part of the [p4n4](https://github.com/raisga/p4n4) platform — an EdgeAI + GenA
 
 ## Status
 
-**v0.1** implements a read-only project/stack surface built on
+**v0.1** implements a read-only project/stack/edge-metrics surface built on
 [`p4n4-lib`](https://github.com/raisga/p4n4-lib) (manifest, layout, validation, and
 Compose status — both flat and multi-layer project layouts):
 
@@ -21,6 +21,7 @@ Compose status — both flat and multi-layer project layouts):
 | `GET` | `/api/v1/project/validate` | Run `p4n4_lib.validate` checks; returns `{ok, passed, errors}` |
 | `GET` | `/api/v1/stacks` | Compose service status per stack |
 | `GET` | `/api/v1/stacks/{stack}` | One stack's service status (404 if not enabled) |
+| `GET` | `/api/v1/edge/metrics` | CPU, memory, disk, temperature, uptime and load of the host (the edge device) |
 | `GET` | `/swagger-ui`, `/openapi.json` | Interactive docs / OpenAPI spec |
 
 Everything else in this README (auth, device registry, telemetry, SSE, agents, MQTT,
@@ -217,6 +218,18 @@ Authentication: `Authorization: Bearer <jwt>` (except public endpoints)
 | `GET` | `/api/v1/telemetry` | operator | Query historical data |
 | `GET` | `/api/v1/telemetry/stream` | operator | SSE live stream |
 
+### Edge
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/edge/metrics` | Host system metrics, in the [dashboard's edge metrics contract](https://github.com/raisga/p4n4-dashboard#edge-metrics-contract) |
+
+Fields: `cpu_percent`, `mem_percent`, `mem_used_mb`, `mem_total_mb`, `disk_percent` (of `/`),
+`uptime_s`, `load` (1/5/15 min) and `temp_c`. `temp_c` comes from a CPU/SoC sensor
+(`cpu_thermal` on a Raspberry Pi, `coretemp`/`k10temp` on x86) and is omitted when none is
+found, e.g. on macOS, Windows or in a VM. `inference_ms` is added once the Edge Impulse runner
+proxy exists.
+
 ### Inference (operator+)
 
 | Method | Path | Description |
@@ -256,7 +269,8 @@ p4n4-api/
 │   └── routes/              # One APIRouter per API group
 │       ├── health.py        # GET /health
 │       ├── project.py       # GET /api/v1/project, /project/validate
-│       └── stacks.py        # GET /api/v1/stacks, /stacks/{stack}
+│       ├── stacks.py        # GET /api/v1/stacks, /stacks/{stack}
+│       └── edge.py          # GET /api/v1/edge/metrics
 └── tests/
 ```
 

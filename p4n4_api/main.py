@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, FastAPI
 
 from p4n4_api import __version__
-from p4n4_api.routes import health, project, stacks
+from p4n4_api.routes import edge, health, project, stacks
 
 
 def create_app() -> FastAPI:
@@ -20,6 +20,7 @@ def create_app() -> FastAPI:
     api_v1 = APIRouter(prefix="/api/v1")
     api_v1.include_router(project.router)
     api_v1.include_router(stacks.router)
+    api_v1.include_router(edge.router)
     app.include_router(api_v1)
     return app
 

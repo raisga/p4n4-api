@@ -25,6 +25,7 @@ dependencies = [
   "p4n4-lib>=0.1.0",
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",
+  "psutil>=5.9",
 ]
 
 [project.optional-dependencies]
