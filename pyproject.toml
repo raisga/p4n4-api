@@ -24,10 +24,11 @@ classifiers = [
 dependencies = [
   "p4n4-lib>=0.1.0",
   "fastapi>=0.110",
-  "uvicorn[standard]>=0.29",
+  "uvicorn[standard]>=0.31.1",
   "psutil>=5.9",
   "pyjwt>=2.8",
   "argon2-cffi>=23.1",
+  "pydantic-settings>=2.7",
 ]
 
 [project.optional-dependencies]

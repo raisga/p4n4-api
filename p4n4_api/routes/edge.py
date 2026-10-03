@@ -6,6 +6,7 @@ import time
 
 import psutil
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/edge", tags=["edge"])
 
@@ -32,20 +33,32 @@ def _temp_c() -> float | None:
     return round(sensors[names[0]][0].current, 1) if names else None
 
 
-@router.get("/metrics")
-def metrics() -> dict:
-    """Snapshot in the dashboard's edge metrics contract; unknown fields are omitted."""
+class EdgeMetrics(BaseModel):
+    """p4n4-dashboard's edge metrics contract (dashboard/README.md#edge-metrics-contract).
+    Only the percentages are required; unknown values are omitted, never sent as null."""
+
+    cpu_percent: float
+    mem_percent: float
+    mem_used_mb: int | None = None
+    mem_total_mb: int | None = None
+    disk_percent: float | None = None
+    temp_c: float | None = None
+    uptime_s: int | None = None
+    load: list[float] | None = None  # 1, 5 and 15 minute load averages
+    inference_ms: float | None = None  # from the Edge Impulse runner, once M6 exists
+
+
+@router.get("/metrics", response_model_exclude_none=True)
+def metrics() -> EdgeMetrics:
+    """Snapshot of the host's CPU, memory, disk, temperature, uptime and load."""
     mem = psutil.virtual_memory()
-    body = {
-        "cpu_percent": psutil.cpu_percent(interval=None),
-        "mem_percent": mem.percent,
-        "mem_used_mb": round(mem.used / 2**20),
-        "mem_total_mb": round(mem.total / 2**20),
-        "disk_percent": psutil.disk_usage("/").percent,
-        "uptime_s": int(time.time() - psutil.boot_time()),
-        "load": [round(x, 2) for x in psutil.getloadavg()],
-    }
-    temp = _temp_c()
-    if temp is not None:
-        body["temp_c"] = temp
-    return body
+    return EdgeMetrics(
+        cpu_percent=psutil.cpu_percent(interval=None),
+        mem_percent=mem.percent,
+        mem_used_mb=round(mem.used / 2**20),
+        mem_total_mb=round(mem.total / 2**20),
+        disk_percent=psutil.disk_usage("/").percent,
+        temp_c=_temp_c(),
+        uptime_s=int(time.time() - psutil.boot_time()),
+        load=[round(x, 2) for x in psutil.getloadavg()],
+    )

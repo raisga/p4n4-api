@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from p4n4_lib import env as envutil
+from p4n4_lib import manifest as mf
 
 # ── /health ───────────────────────────────────────────────────────────────────
 
@@ -20,7 +21,7 @@ def test_project_requires_manifest(client, tmp_path, monkeypatch):
     monkeypatch.setenv("P4N4_PROJECT_DIR", str(tmp_path))
     r = client.get("/api/v1/project")
     assert r.status_code == 404
-    assert ".p4n4.json" in r.json()["detail"]
+    assert ".p4n4.json" in r.json()["error"]["message"]
 
 
 def test_project_info_flat(client, flat_project):
@@ -31,6 +32,22 @@ def test_project_info_flat(client, flat_project):
     assert body["layers"] == ["iot"]
     assert body["layout"] == "flat"
     assert body["stacks"] == [{"name": "iot", "dir": str(flat_project), "relative_dir": "."}]
+    assert body["template"] is None
+    assert body["dashboard"] is None
+
+
+def test_project_info_template_and_dashboard(client, flat_project):
+    path = flat_project / mf.MANIFEST_FILE
+    data = mf.load(path)
+    data["template"] = {"name": "mqtt-influx-grafana", "version": "0.2.0"}
+    data["dashboard"] = {
+        "grafana_path": "/d/p4n4-telemetry/telemetry",
+        "tabs": ["services", "grafana"],
+    }
+    mf.save(path, data)
+    body = client.get("/api/v1/project").json()
+    assert body["template"] == data["template"]
+    assert body["dashboard"] == data["dashboard"]
 
 
 def test_project_info_multi(client, multi_project):
@@ -67,6 +84,18 @@ def test_validate_reports_errors(client, multi_project):
     assert body["ok"] is False
     assert "Missing file: ai/config/letta/letta.conf" in body["errors"]
     assert "iot/.env missing required key: GRAFANA_PASSWORD" in body["errors"]
+
+
+def test_validate_reports_dashboard_errors(client, flat_project):
+    path = flat_project / mf.MANIFEST_FILE
+    data = mf.load(path)
+    data["dashboard"] = {"grafana_path": "d/no-slash", "colour": "red"}
+    mf.save(path, data)
+
+    body = client.get("/api/v1/project/validate").json()
+    assert body["ok"] is False
+    assert '.p4n4.json: dashboard.grafana_path must be a path starting with "/"' in body["errors"]
+    assert ".p4n4.json: dashboard.colour is not a known setting" in body["errors"]
 
 
 # ── /api/v1/stacks ────────────────────────────────────────────────────────────
@@ -123,7 +152,7 @@ def test_stacks_503_when_docker_down(client, multi_project, monkeypatch):
     for path in ("/api/v1/stacks", "/api/v1/stacks/iot"):
         r = client.get(path)
         assert r.status_code == 503
-        assert "cannot connect" in r.json()["detail"]
+        assert "cannot connect" in r.json()["error"]["message"]
 
 
 def test_stack_service_details(client, multi_project, monkeypatch):
@@ -191,6 +220,18 @@ def test_stack_legacy_compose_fields(client, multi_project, monkeypatch):
     svc = client.get("/api/v1/stacks/ai").json()["services"][0]
     assert svc["name"] == "ollama"
     assert svc["image"] is None and svc["version"] is None and svc["uptime_s"] is None
+
+
+def test_stack_null_fields_from_compose(client, multi_project, monkeypatch):
+    # Some Compose versions print null rather than leaving a field out.
+    monkeypatch.setattr(
+        "p4n4_api.routes.stacks.compose.ps",
+        _fake_ps({"ai": [{"Service": "ollama", "State": None, "Health": None, "ExitCode": None}]}),
+    )
+    r = client.get("/api/v1/stacks/ai")
+    assert r.status_code == 200
+    svc = r.json()["services"][0]
+    assert (svc["state"], svc["health"]) == ("?", "")
 
 
 def test_image_version():
@@ -324,3 +365,35 @@ def test_edge_metrics_omits_unknown_temp(client, monkeypatch):
     # macOS / Windows: psutil has no sensors_temperatures at all.
     monkeypatch.delattr(edge.psutil, "sensors_temperatures", raising=False)
     assert "temp_c" not in client.get("/api/v1/edge/metrics").json()
+
+
+# ── OpenAPI schemas ───────────────────────────────────────────────────────────
+
+
+def _schemas(c) -> tuple[dict, dict]:
+    spec = c.get("/openapi.json").json()
+    return spec["paths"], spec["components"]["schemas"]
+
+
+def test_every_endpoint_documents_its_response(anon):
+    paths, _ = _schemas(anon)
+    untyped = []
+    for path, ops in paths.items():
+        for method, op in ops.items():
+            ok = next((op["responses"][s] for s in ("200", "201") if s in op["responses"]), None)
+            if ok is None:
+                continue  # 204: no body
+            schema = ok.get("content", {}).get("application/json", {}).get("schema", {})
+            if not schema or schema.get("additionalProperties") is True:
+                untyped.append(f"{method.upper()} {path}")
+    assert untyped == []
+
+
+def test_dashboard_contracts_in_schema(anon):
+    # p4n4-dashboard parses these; changing them breaks it, so this test should too.
+    paths, schemas = _schemas(anon)
+    assert {"name", "state", "health"} <= set(schemas["Service"]["required"])
+    assert {"services", "running", "total"} <= set(schemas["Stack"]["required"])
+    assert set(schemas["EdgeMetrics"]["required"]) == {"cpu_percent", "mem_percent"}
+    ready = paths["/ready"]["get"]["responses"]
+    assert ready["503"]["content"]["application/json"]["schema"]["$ref"].endswith("/Readiness")

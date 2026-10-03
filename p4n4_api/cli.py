@@ -6,7 +6,7 @@ import argparse
 import getpass
 import sys
 
-from p4n4_api import db, users
+from p4n4_api import db, logs, users
 from p4n4_api.config import load_settings
 
 
@@ -27,6 +27,15 @@ def _users(args: argparse.Namespace) -> int:
                 print("No users. Create one with: p4n4-api users add <name> --role admin")
             for row in rows:
                 print(f"{row['username']:<32} {row['role']:<9} created {row['created_at']}")
+            return 0
+        if args.action == "bootstrap":
+            password = users.bootstrap_admin(conn, args.username)
+            if password is None:
+                print("Users already exist; nothing to do.")
+            else:
+                name = users.normalize_username(args.username)
+                print(f"Created admin '{name}' with password: {password}")
+                print("It won't be shown again. Change it with: POST /api/v1/auth/password")
             return 0
         name = users.normalize_username(args.username)
         if args.action == "add":
@@ -55,6 +64,11 @@ def _parser() -> argparse.ArgumentParser:
     users_parser = sub.add_parser("users", help="Manage operator and admin accounts")
     actions = users_parser.add_subparsers(dest="action", required=True)
     actions.add_parser("list", help="List users")
+    bootstrap = actions.add_parser(
+        "bootstrap",
+        help="Create the first admin with a generated password, if there are no users yet",
+    )
+    bootstrap.add_argument("username", nargs="?", default="admin")
     for action, help_text in (("add", "Create a user"), ("passwd", "Change a password")):
         p = actions.add_parser(action, help=help_text)
         p.add_argument("username")
@@ -79,5 +93,16 @@ def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
     settings = load_settings()
-    uvicorn.run("p4n4_api.main:app", host=settings.host, port=settings.port)
+    # The app reads X-Forwarded-For itself, only from P4N4_API_TRUSTED_PROXIES. uvicorn's own
+    # handling would also trust 127.0.0.1, letting any local process pick its address.
+    # Logging: our formatter and request IDs for uvicorn's lines too, and our access log
+    # (with request ID and duration) instead of uvicorn's.
+    uvicorn.run(
+        "p4n4_api.main:app",
+        host=settings.host,
+        port=settings.port,
+        proxy_headers=False,
+        access_log=False,
+        log_config=logs.log_config(settings.log_format, settings.log_level),
+    )
     return 0

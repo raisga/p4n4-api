@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import re
+import secrets
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,8 +12,10 @@ from datetime import UTC, datetime
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 
-# Lowest first. "device" joins with the device registry (M3), outside this ranking.
+# People's roles, lowest first. Devices have the role "device", outside this ranking: they
+# can't do what operators can, and only devices pass require_role("device").
 ROLES = ("operator", "admin")
+DEVICE_ROLE = "device"
 MIN_PASSWORD_LENGTH = 10
 _USERNAME = re.compile(r"[a-z0-9][a-z0-9_.-]{1,31}")
 
@@ -28,11 +31,26 @@ class User:
 
     def has_role(self, role: str) -> bool:
         """Roles are ranked: an admin can do everything an operator can."""
+        if DEVICE_ROLE in (role, self.role):
+            return role == self.role
         return self.role in ROLES and ROLES.index(self.role) >= ROLES.index(role)
 
 
 class UserError(ValueError):
     """Invalid input, e.g. a bad username, short password or unknown role."""
+
+
+class UserExists(UserError):
+    """The username is taken."""
+
+
+class LastAdminError(UserError):
+    """The change would leave no admin to manage users."""
+
+
+# Appended to a statement's WHERE clause: the row isn't an admin, or another admin remains.
+# Checked inside the write itself, so two admins demoting each other can't both succeed.
+_NOT_LAST_ADMIN = "(role != 'admin' OR (SELECT COUNT(*) FROM users WHERE role = 'admin') > 1)"
 
 
 def normalize_username(username: str) -> str:
@@ -71,6 +89,14 @@ def list_all(conn: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def info(conn: sqlite3.Connection, username: str) -> dict | None:
+    """A user's public fields (no password hash), or None."""
+    row = conn.execute(
+        "SELECT username, role, created_at FROM users WHERE username = ?", (username,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def count(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
 
@@ -85,13 +111,47 @@ def create(conn: sqlite3.Connection, username: str, password: str, role: str) ->
             (name, hasher.hash(password), role, datetime.now(UTC).isoformat(timespec="seconds")),
         )
     except sqlite3.IntegrityError as exc:
-        raise UserError(f"User '{name}' already exists.") from exc
+        raise UserExists(f"User '{name}' already exists.") from exc
     return User(name, role)
 
 
-def delete(conn: sqlite3.Connection, username: str) -> bool:
-    """Remove a user; their refresh tokens go with them (ON DELETE CASCADE)."""
-    return conn.execute("DELETE FROM users WHERE username = ?", (username,)).rowcount > 0
+def _last_admin(username: str) -> LastAdminError:
+    return LastAdminError(
+        f"'{username}' is the last admin. Make another user an admin first "
+        "(or use `p4n4-api users` on the server)."
+    )
+
+
+def bootstrap_admin(conn: sqlite3.Connection, username: str = "admin") -> str | None:
+    """Create the first admin with a generated password, only while there are no users.
+
+    Returns the password (for the caller to show once), or None if users already exist.
+    Safe to run on every install or container start.
+    """
+    name = normalize_username(username)
+    password = secrets.token_urlsafe(18)  # 24 characters, 144 bits
+    # One statement, so two concurrent bootstraps can't both see an empty table.
+    created = conn.execute(
+        "INSERT INTO users (username, password_hash, role, created_at) "
+        "SELECT ?, ?, 'admin', ? WHERE NOT EXISTS (SELECT 1 FROM users)",
+        (name, hasher.hash(password), datetime.now(UTC).isoformat(timespec="seconds")),
+    ).rowcount
+    return password if created else None
+
+
+def delete(conn: sqlite3.Connection, username: str, *, keep_admin: bool = False) -> bool:
+    """Remove a user; their refresh tokens go with them (ON DELETE CASCADE).
+
+    With `keep_admin`, refuse to remove the last admin (the CLI can, as a recovery path).
+    """
+    sql = "DELETE FROM users WHERE username = ?"
+    if keep_admin:
+        sql += f" AND {_NOT_LAST_ADMIN}"
+    if conn.execute(sql, (username,)).rowcount:
+        return True
+    if keep_admin and get(conn, username):
+        raise _last_admin(username)
+    return False
 
 
 def set_password(conn: sqlite3.Connection, username: str, password: str) -> bool:
@@ -105,12 +165,22 @@ def set_password(conn: sqlite3.Connection, username: str, password: str) -> bool
     return updated > 0
 
 
-def set_role(conn: sqlite3.Connection, username: str, role: str) -> bool:
-    """Change a role. It applies on the next request: the role is read per request."""
+def set_role(
+    conn: sqlite3.Connection, username: str, role: str, *, keep_admin: bool = False
+) -> bool:
+    """Change a role. It applies on the next request: the role is read per request.
+
+    With `keep_admin`, refuse to demote the last admin.
+    """
     _check_role(role)
-    return (
-        conn.execute("UPDATE users SET role = ? WHERE username = ?", (role, username)).rowcount > 0
-    )
+    sql = "UPDATE users SET role = ? WHERE username = ?"
+    if keep_admin and role != "admin":
+        sql += f" AND {_NOT_LAST_ADMIN}"
+    if conn.execute(sql, (role, username)).rowcount:
+        return True
+    if keep_admin and get(conn, username):
+        raise _last_admin(username)
+    return False
 
 
 @functools.cache

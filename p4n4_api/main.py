@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-from p4n4_api import __version__, auth, db, users
+from p4n4_api import __version__, auth, db, errors, jobs, logs, users
 from p4n4_api.config import load_settings
+from p4n4_api.routes import audit as audit_routes
 from p4n4_api.routes import auth as auth_routes
-from p4n4_api.routes import edge, health, project, stacks
+from p4n4_api.routes import control, devices, edge, health, project, stacks
+from p4n4_api.routes import jobs as jobs_routes
+from p4n4_api.routes import users as users_routes
 
 log = logging.getLogger("p4n4_api")
 
@@ -27,8 +32,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not settings.auth_enabled:
         log.warning("P4N4_API_AUTH=off: every request is treated as an admin. Development only.")
     elif user_count == 0:
-        log.warning("No users yet. Create an admin with: p4n4-api users add admin --role admin")
+        log.warning(
+            "No users yet. Create an admin with: p4n4-api users add admin --role admin "
+            "(or `p4n4-api users bootstrap` for a generated password)"
+        )
     yield
+    jobs.shutdown()
+
+
+def _trusted_proxies(entries: tuple[str, ...]) -> list[str]:
+    """Check P4N4_API_TRUSTED_PROXIES. uvicorn would quietly keep a typo as a literal that
+    never matches, leaving every client behind the proxy sharing one rate limit."""
+    for entry in entries:
+        try:
+            ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            raise RuntimeError(
+                f"P4N4_API_TRUSTED_PROXIES: {entry!r} is not an IP address or network "
+                "(e.g. 172.17.0.1 or 172.16.0.0/12)."
+            ) from None
+    return list(entries)
 
 
 def create_app() -> FastAPI:
@@ -38,8 +61,21 @@ def create_app() -> FastAPI:
         version=__version__,
         docs_url="/swagger-ui",
         lifespan=lifespan,
+        responses=errors.RESPONSES,
     )
-    origins = load_settings().cors_origins
+    errors.install(app)
+    settings = load_settings()
+    # Added first, so it runs inside the proxy middleware and logs the real client address.
+    app.add_middleware(logs.RequestIdMiddleware)
+    if settings.trusted_proxies:
+        # Behind the dashboard's nginx every request comes from the proxy's address. Take the
+        # client from X-Forwarded-For (rightmost untrusted hop), so the sign-in rate limit
+        # applies per client rather than to everyone at once. Only from these proxies:
+        # anyone else could put any address there.
+        app.add_middleware(
+            ProxyHeadersMiddleware, trusted_hosts=_trusted_proxies(settings.trusted_proxies)
+        )
+    origins = settings.cors_origins
     if origins:
         # Bearer tokens go in the Authorization header, so no cookies: credentials stay off,
         # which also keeps a "*" origin safe.
@@ -47,7 +83,8 @@ def create_app() -> FastAPI:
             CORSMiddleware,
             allow_origins=list(origins),
             allow_methods=["GET", "POST", "PATCH", "DELETE"],
-            allow_headers=["Authorization", "Content-Type"],
+            allow_headers=["Authorization", "Content-Type", logs.HEADER],
+            expose_headers=[logs.HEADER],
         )
     app.include_router(health.router)
 
@@ -57,7 +94,15 @@ def create_app() -> FastAPI:
     operator = [Depends(auth.require_role("operator"))]
     api_v1.include_router(project.router, dependencies=operator)
     api_v1.include_router(stacks.router, dependencies=operator)
+    # Control and logs are admin-only per route; job progress is readable by operators.
+    api_v1.include_router(control.router, dependencies=operator)
+    api_v1.include_router(jobs_routes.router, dependencies=operator)
     api_v1.include_router(edge.router, dependencies=operator)
+    # Operators read the registry; its write routes add the admin check themselves.
+    api_v1.include_router(devices.router, dependencies=operator)
+    admin = [Depends(auth.require_role("admin"))]
+    api_v1.include_router(users_routes.router, dependencies=admin)
+    api_v1.include_router(audit_routes.router, dependencies=admin)
     app.include_router(api_v1)
     return app
 

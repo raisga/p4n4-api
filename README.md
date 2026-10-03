@@ -13,26 +13,38 @@ Part of the [p4n4](https://github.com/raisga/p4n4) platform — an EdgeAI + GenA
 **v0.1** implements user sign-in (JWT) and a read-only project/stack/edge-metrics surface
 built on [`p4n4-lib`](https://github.com/raisga/p4n4-lib) (manifest, layout, validation, and
 Compose status — both flat and multi-layer project layouts). Endpoints marked 🔒 need an
-`operator` or `admin` access token:
+`operator` or `admin` access token; 🔑 needs `admin`:
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness probe |
 | `GET` | `/ready` | Readiness probe: project found and Docker reachable (`503` otherwise) |
 | `GET` | `/api/v1/version` | API, API-version and `p4n4-lib` versions |
-| `POST` | `/api/v1/auth/token` | Username + password → access token (1 h) + refresh token (7 d) |
+| `POST` | `/api/v1/auth/token` | Username + password → access token (1 h) + refresh token (7 d); or a device's `api_key` → access token (1 h) |
 | `POST` | `/api/v1/auth/refresh` | Refresh token → new pair (each refresh token works once) |
-| `POST` | `/api/v1/auth/logout` | Revoke the refresh token and its whole sign-in |
+| `POST` | `/api/v1/auth/logout` | Revoke the refresh token and its whole sign-in, access tokens included |
+| `POST` | `/api/v1/auth/password` | Change your own password (🔒 any role): signs out every other sign-in and returns a new pair |
 | `GET` | `/api/v1/auth/me` | The signed-in user and role (🔒 any role) |
-| `GET` | `/api/v1/project` | 🔒 Manifest, layout (`flat`/`multi`), and per-stack directories |
+| `GET` `POST` | `/api/v1/users` | 🔑 List users / create one (`{username, password, role}`, role defaults to `operator`) |
+| `GET` `PATCH` `DELETE` | `/api/v1/users/{username}` | 🔑 Read, change (`{role?, password?}`) or remove a user. The last admin can't be demoted or removed (`409`) |
+| `GET` | `/api/v1/devices` | 🔒 Device registry, paginated (`limit`, `offset`) |
+| `POST` | `/api/v1/devices` | 🔑 Register a device; the response holds its API key, shown once |
+| `GET` `PATCH` `DELETE` | `/api/v1/devices/{id}` | 🔒 Read; 🔑 change (`name`, `description`, `enabled`) or remove |
+| `POST` | `/api/v1/devices/{id}/key` | 🔑 Rotate the API key (old key and its tokens stop at once) |
+| `GET` | `/api/v1/project` | 🔒 Manifest (including its optional `template` and `dashboard` blocks), layout (`flat`/`multi`), and per-stack directories |
 | `GET` | `/api/v1/project/validate` | 🔒 Run `p4n4_lib.validate` checks; returns `{ok, passed, errors}` |
 | `GET` | `/api/v1/stacks` | 🔒 Compose service status per stack (`503` if Docker is unreachable) |
 | `GET` | `/api/v1/stacks/{stack}` | 🔒 One stack's service status (404 if not enabled) |
+| `POST` | `/api/v1/stacks/{stack\|all}/{up\|down\|restart}` | 🔑 Run a stack action as a background job (`202` + `Location`) |
+| `POST` | `/api/v1/stacks/{stack}/services/{service}/restart` | 🔑 Restart one service, as a job |
+| `GET` | `/api/v1/stacks/{stack}/logs` | 🔑 Container logs (`tail`, `service`); `follow=true` streams them as server-sent events |
+| `GET` | `/api/v1/jobs`, `/api/v1/jobs/{id}` | 🔒 Job status and Compose output |
+| `GET` | `/api/v1/audit` | 🔑 Audit log: stack actions, user and device changes |
 | `GET` | `/api/v1/edge/metrics` | 🔒 CPU, memory, disk, temperature, uptime and load of the host (the edge device) |
 | `GET` | `/swagger-ui`, `/openapi.json` | Interactive docs / OpenAPI spec |
 
-Everything else in this README (device API keys and registry, telemetry, SSE, agents, MQTT,
-metrics) is the **design target**, not yet implemented. See [TODO.md](TODO.md) for the plan.
+Everything else in this README (telemetry and its live stream, inference, agents, MQTT,
+Prometheus metrics) is the **design target**, not yet implemented. See [TODO.md](TODO.md) for the plan.
 
 ---
 
@@ -141,6 +153,8 @@ For local development only:
 
    ```bash
    uv run p4n4-api users add admin --role admin
+   # Or generate a password, shown once (does nothing if any user exists, so safe in scripts):
+   uv run p4n4-api users bootstrap
    ```
 
 4. **Start the API**
@@ -171,6 +185,7 @@ For local development only:
 
 ```bash
 p4n4-api users list
+p4n4-api users bootstrap                 # first admin with a generated password; no-op once users exist
 p4n4-api users add alice                 # operator by default; --role admin
 p4n4-api users passwd alice              # also signs alice out everywhere
 p4n4-api users role alice admin
@@ -178,15 +193,21 @@ p4n4-api users remove alice
 # Scripts: echo "$PASSWORD" | p4n4-api users add alice --password-stdin
 ```
 
-`operator` can read everything the API serves today; `admin` can also do what's planned
-for admins (device registry, stack control). A user's role is read on every request, so role
-changes and removals apply immediately.
+Admins can do the same over HTTP (`/api/v1/users`), e.g. from the dashboard, and anyone signed
+in can change their own password (`POST /api/v1/auth/password`). The API won't demote or remove
+the last admin; the CLI will, so it stays the way back in.
+
+`operator` can read project, stack and edge status, the device registry and job progress;
+`admin` can also manage users and devices, start/stop/restart stacks, read container logs
+and read the audit log. A user's role is read on every
+request, so role changes and removals apply immediately. Changing or resetting a password
+signs that user out everywhere.
 
 ---
 
 ## Configuration
 
-All configuration is read from environment variables. Currently used:
+All configuration is read from environment variables (via `pydantic-settings`; empty values count as unset, invalid ones stop startup with the variable named). Currently used:
 
 | Variable | Description |
 |---|---|
@@ -196,6 +217,9 @@ All configuration is read from environment variables. Currently used:
 | `P4N4_API_CORS_ORIGINS` | Comma-separated browser origins allowed to call the API, e.g. `http://localhost:8088`. Empty (default) disables CORS. No credentials are allowed, so `*` is accepted |
 | `P4N4_API_DATA_DIR` | Where the API keeps its SQLite database (`api.db`: users, refresh tokens) and generated JWT secret (default: `$XDG_DATA_HOME/p4n4-api`, i.e. `~/.local/share/p4n4-api`). Back it up; created owner-only |
 | `P4N4_API_JWT_SECRET` | HS256 signing key, at least 32 characters (`openssl rand -hex 32`). Default: generated once into `$P4N4_API_DATA_DIR/jwt_secret`. Changing it signs everyone out |
+| `P4N4_API_TRUSTED_PROXIES` | Comma-separated reverse-proxy IPs or networks whose `X-Forwarded-For` is believed, so the sign-in rate limit applies per client instead of to everyone behind the proxy. For the dashboard's nginx container reaching a host-run API: `172.16.0.0/12` (Docker's default bridge networks). Default: none; the header is ignored |
+| `P4N4_API_LOG_FORMAT` | `text` (default) or `json` (one object per line, for log collectors). Applies to `p4n4-api serve` |
+| `P4N4_API_LOG_LEVEL` | `debug`, `info` (default), `warning` or `error` |
 | `P4N4_API_AUTH` | `off` disables auth: every request is treated as an admin. **Development only**; logs a warning at startup |
 
 Planned (for the upstream-proxy features below): `INFLUXDB_URL`,
@@ -208,6 +232,18 @@ Planned (for the upstream-proxy features below): `INFLUXDB_URL`,
 
 Base path: `/api/v1`
 Authentication: `Authorization: Bearer <jwt>` (except public endpoints)
+
+### Errors
+
+Every error (4xx/5xx) has the same body:
+
+```json
+{"error": {"code": "not_found", "message": "Stack 'nope' not found in this project."}}
+```
+
+Every response, errors included, carries an `X-Request-ID` header: the caller's own (up to 64 of `A-Z a-z 0-9 . _ : -`) or a generated one. Log lines written while handling the request carry the same ID, so quote it when reporting a problem.
+
+`code` is stable and meant for programs: by default it follows the status (`bad_request`, `unauthorized`, `forbidden`, `not_found`, `method_not_allowed`, `conflict`, `validation_error`, `rate_limited`, `internal_error`, `unavailable`), with specific codes where one status means different things (`409`: `user_exists`, `last_admin`). `message` is for people and may change. `validation_error` from request parsing adds `fields: [{loc, message}]`. Unexpected failures return `500 internal_error` without details; the server log has the traceback. `GET /ready`'s `503` is a status report (`{status, checks}`), not an error.
 
 ### Public endpoints
 
@@ -223,10 +259,23 @@ Authentication: `Authorization: Bearer <jwt>` (except public endpoints)
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/v1/auth/token` | Exchange a username + password (people) for a JWT pair; device API keys in M3 |
+| `POST` | `/api/v1/auth/token` | People: `{username, password}` → access + refresh token. Devices: `{api_key}` → access token only (exchange the key again when it expires) |
 | `POST` | `/api/v1/auth/refresh` | Exchange a refresh token for a new pair (single use) |
 | `POST` | `/api/v1/auth/logout` | Revoke a refresh token and every token from the same sign-in |
+| `POST` | `/api/v1/auth/password` | Change your own password (`{current_password, new_password}`); returns a new pair |
 | `GET` | `/api/v1/auth/me` | Current user and role |
+
+### Users (admin)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/users` | List users (`username`, `role`, `created_at`) |
+| `POST` | `/api/v1/users` | Create a user (`201`; `409` if the name is taken, `422` if invalid) |
+| `GET` | `/api/v1/users/{username}` | One user |
+| `PATCH` | `/api/v1/users/{username}` | Change the role and/or reset the password; both apply or neither does |
+| `DELETE` | `/api/v1/users/{username}` | Remove a user (`204`) |
+
+Demoting or removing the last admin returns `409`.
 
 ### Stack health (operator+)
 
@@ -240,16 +289,55 @@ Each service reports `name`, `state`, `health`, plus `image`, `version` (the ima
 `ports` (published), `started_at` and `uptime_s` (running services only). Fields Docker
 doesn't provide (e.g. with standalone `docker-compose` v1) are `null`.
 
+### Stack control (admin)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/stacks/{stack}/{action}` | `up`, `down` or `restart` a stack, or `all` of them (up in dependency order iot → ai → edge → dashboard, down in reverse; stops at the first failure). `?pull=true` (up only) pulls newer images first. `down` never removes volumes |
+| `POST` | `/api/v1/stacks/{stack}/services/{service}/restart` | Restart one service (`404` unless the stack defines it) |
+| `GET` | `/api/v1/stacks/{stack}/logs` | `?tail=` (1–5000, default 200) `&service=`; JSON `{stack, service, lines}`. With `&follow=true`: `text/event-stream`, one `data:` per line, a keep-alive comment every 15 s, and `event: end` with Compose's exit code. Compose is stopped when the client disconnects |
+
+Actions answer `202` with a job and a `Location: /api/v1/jobs/{id}` header; poll it until
+`status` is `succeeded` or `failed`. Jobs run one at a time in the order queued, so Compose
+operations never overlap; queuing the same action again while it's still waiting returns
+the waiting job. A job is stopped after 30 minutes. Jobs are kept in memory (the newest
+100, each with the last 500 lines of output), so restarting the API forgets them; the audit
+log keeps who ran what. Logs are admin-only because they can contain secrets.
+
+### Jobs (operator+)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/jobs` | Recent jobs, newest first (`?limit=`, without output) |
+| `GET` | `/api/v1/jobs/{id}` | One job: `status` (`queued`, `running`, `succeeded`, `failed`), timestamps, `exit_code`, `output` |
+
+### Audit log (admin)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/audit` | Newest first, `?limit=` (1–500) `&offset=`. Entries: `at`, `actor`, `action` (`stack.up`, `user.create`, `device.rotate_key`, …), `target`, `outcome`, `request_id` |
+
+Stack actions are logged when queued and when finished (with the exit code). User and
+device changes are logged in the same transaction as the change, so a refused change leaves
+no entry.
+
 ### Devices (admin for writes, operator for reads)
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/v1/devices` | List devices (paginated) |
-| `POST` | `/api/v1/devices` | Register a new device |
-| `GET` | `/api/v1/devices/{id}` | Get device by ID |
-| `PATCH` | `/api/v1/devices/{id}` | Update device metadata |
-| `DELETE` | `/api/v1/devices/{id}` | Deregister device |
-| `GET` | `/api/v1/devices/{id}/key` | Rotate API key |
+| `GET` | `/api/v1/devices` | List devices by ID: `?limit=` (1–200, default 50) `&offset=`; returns `{items, total, limit, offset}` |
+| `POST` | `/api/v1/devices` | Register a device (`{id, name?, description?}`); `201` with its `api_key`, shown once. `409 device_exists` if the ID is taken |
+| `GET` | `/api/v1/devices/{id}` | One device: `id`, `name`, `description`, `enabled`, `key_prefix`, `created_at`, `last_seen_at` |
+| `PATCH` | `/api/v1/devices/{id}` | Change `name`, `description` or `enabled` |
+| `DELETE` | `/api/v1/devices/{id}` | Deregister; its key and tokens stop working at once |
+| `POST` | `/api/v1/devices/{id}/key` | Rotate the API key; the new one is shown once, the old one and its tokens stop at once |
+
+Device IDs are lowercase slugs (`greenhouse-01`), since they'll tag telemetry. API keys look
+like `p4n4_<key id>_<secret>`; `key_prefix` (`p4n4_<key id>`) identifies one without
+revealing it. A device signs in with `POST /api/v1/auth/token {"api_key": ...}` and sends the
+access token as `Authorization: Bearer`, like people do; its role, `device`, grants telemetry
+ingest (M5) and nothing operators can do. Disabling a device is a pause: re-enabling makes its
+current key and tokens valid again. For a lost or leaked key, rotate it or delete the device.
 
 ### Telemetry
 
@@ -292,7 +380,7 @@ proxy exists.
 |---|---|---|
 | `POST` | `/api/v1/mqtt/publish` | Publish a message to a topic |
 
-See the [DESIGN.md](DESIGN.md) for complete request/response schemas, error codes, and middleware documentation.
+Request and response schemas for implemented endpoints are in the OpenAPI spec (`/openapi.json`, browsable at `/swagger-ui`); the build order is in [TODO.md](TODO.md).
 
 ---
 
@@ -310,13 +398,23 @@ p4n4-api/
 │   ├── deps.py              # Project resolution dependency (p4n4_lib.manifest)
 │   ├── db.py                # SQLite database and schema migrations
 │   ├── users.py             # Accounts, roles, argon2id password hashing
+│   ├── devices.py           # Device registry and API keys
 │   ├── auth.py              # JWT issue/verify, refresh rotation, role dependencies, rate limit
 │   ├── docker.py            # Docker daemon check, container start times
+│   ├── errors.py            # Standard error body and exception handlers
+│   ├── logs.py              # Request IDs, access log, text/JSON log formatting
+│   ├── jobs.py              # Background stack actions (one at a time, in memory)
+│   ├── audit.py             # Append-only audit log
 │   └── routes/              # One APIRouter per API group
-│       ├── auth.py          # /api/v1/auth/token, /refresh, /logout, /me
+│       ├── auth.py          # /api/v1/auth/token, /refresh, /logout, /password, /me
+│       ├── users.py         # /api/v1/users (admin user management)
+│       ├── devices.py       # /api/v1/devices (registry, key rotation)
 │       ├── health.py        # GET /health, /ready, /api/v1/version
 │       ├── project.py       # GET /api/v1/project, /project/validate
 │       ├── stacks.py        # GET /api/v1/stacks, /stacks/{stack}
+│       ├── control.py       # Stack up/down/restart, service restart, logs (SSE)
+│       ├── jobs.py          # GET /api/v1/jobs
+│       ├── audit.py         # GET /api/v1/audit
 │       └── edge.py          # GET /api/v1/edge/metrics
 └── tests/
 ```
@@ -375,12 +473,12 @@ with the upstream-proxy features.
 
 ## Security
 
-- **JWT** — HS256 signed tokens. Access tokens expire in 1 hour; refresh tokens in 7 days. Roles are `operator` and `admin` (`device` arrives with the device registry); the role is read from the database on every request, not trusted from the token.
-- **Refresh rotation** — each refresh token works once. Reusing one revokes every token from that sign-in. Password changes sign the user out everywhere. Signing out revokes refresh tokens; an access token stays valid until it expires (≤ 1 h).
+- **JWT** — HS256 signed tokens. Access tokens expire in 1 hour; refresh tokens in 7 days. Roles are `operator` and `admin` for people (ranked), and `device` (separate: devices can only do device things). The role is read from the database on every request, not trusted from the token; device tokens are re-checked too, so rotating a key, disabling or deleting a device ends its tokens at once.
+- **Refresh rotation** — each refresh token works once. Reusing one revokes every token from that sign-in. Password changes sign the user out everywhere. Signing out revokes that sign-in's refresh **and** access tokens at once (access tokens carry their sign-in's ID, `sid`, checked on every request); other sign-ins are untouched.
 - **Passwords** — argon2id, at least 10 characters. Unknown usernames take as long to reject as wrong passwords.
-- **API keys** — stored as argon2id hashes; plaintext shown only once at device registration.
+- **API keys** — 256-bit random secrets, stored as argon2id hashes; plaintext shown only once, at registration and at rotation. Unknown keys take as long to reject as wrong ones. Key exchange shares the sign-in rate limit.
 - **Secrets** — never stored in the database; all upstream credentials are injected via environment variables.
-- **Rate limiting** — `/auth/token` and `/auth/refresh`: 10 attempts per client address, then one every 6 s (in-memory token bucket; `429` + `Retry-After`).
+- **Rate limiting** — `/auth/token`, `/auth/refresh` and `/auth/password`: 10 attempts per client address, then one every 6 s (in-memory token bucket; `429` + `Retry-After`). Behind a reverse proxy, set `P4N4_API_TRUSTED_PROXIES` or every client shares the proxy's limit; the client is the rightmost `X-Forwarded-For` entry that isn't a trusted proxy. `p4n4-api` turns off uvicorn's own proxy-header handling (which trusts `127.0.0.1`); when running `uvicorn` directly, pass `--no-proxy-headers` for the same behaviour. There's deliberately no per-username limit: it would let anyone lock a known user out.
 - **CORS** — off by default; allowlist via `P4N4_API_CORS_ORIGINS`. Credentials (cookies) are never allowed: auth uses the `Authorization` header.
 - **Port exposure** — for production, remove the `8000` host-port binding and front with a reverse proxy (nginx, Caddy, Traefik).
 
@@ -389,7 +487,7 @@ with the upstream-proxy features.
 ## Resources
 
 - [p4n4 Platform](https://github.com/raisga/p4n4) — umbrella repo and architecture docs
-- [DESIGN.md](DESIGN.md) — full API design document (tech stack, schemas, milestones)
+- [TODO.md](TODO.md) — status, milestones and open questions
 - [p4n4-lib](https://github.com/raisga/p4n4-lib) — shared library (manifest, layout, validation, Compose wrappers) consumed by this package
 - [p4n4-iot](https://github.com/raisga/p4n4-iot) — IoT stack (MQTT, InfluxDB, Node-RED, Grafana)
 - [p4n4-ai](https://github.com/raisga/p4n4-ai) — GenAI stack (Ollama, Letta, n8n)

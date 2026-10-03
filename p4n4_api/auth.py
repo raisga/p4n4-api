@@ -15,7 +15,7 @@ import jwt
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from p4n4_api import db, users
+from p4n4_api import db, devices, users
 from p4n4_api.config import load_settings
 from p4n4_api.users import User
 
@@ -96,8 +96,15 @@ def issue_tokens(conn: sqlite3.Connection, user: User, family: str | None = None
     )
     # Prune here so the table never needs a background job.
     conn.execute("DELETE FROM refresh_tokens WHERE expires_at < ?", (int(time.time()),))
+    # "sid" ties the access token to its sign-in, so revoking the sign-in revokes it too.
     access = _encode(
-        {"sub": user.username, "type": "access", "role": user.role, "gen": user.token_gen},
+        {
+            "sub": user.username,
+            "type": "access",
+            "role": user.role,
+            "gen": user.token_gen,
+            "sid": family,
+        },
         ACCESS_TTL,
     )
     return {
@@ -108,6 +115,22 @@ def issue_tokens(conn: sqlite3.Connection, user: User, family: str | None = None
         "refresh_expires_in": int(REFRESH_TTL.total_seconds()),
         "username": user.username,
         "role": user.role,
+    }
+
+
+def issue_device_token(device: User) -> dict:
+    """An access token for a device. No refresh token: the device keeps its API key and
+    exchanges it again when the token expires."""
+    access = _encode(
+        {"sub": device.username, "type": "access", "role": device.role, "gen": device.token_gen},
+        ACCESS_TTL,
+    )
+    return {
+        "access_token": access,
+        "token_type": "bearer",
+        "expires_in": int(ACCESS_TTL.total_seconds()),
+        "device_id": device.username.removeprefix(devices.SUBJECT_PREFIX),
+        "role": device.role,
     }
 
 
@@ -146,6 +169,22 @@ def revoke(conn: sqlite3.Connection, refresh_token: str) -> None:
     conn.execute("DELETE FROM refresh_tokens WHERE family = ?", (row["family"],))
 
 
+def _session_live(conn: sqlite3.Connection, username: str, sid: object) -> bool:
+    """Whether the sign-in an access token came from still exists.
+
+    A sign-in lives as long as its refresh tokens: sign-out, refresh-token reuse, password
+    changes and user removal all delete them, so the access token stops working at once
+    rather than at expiry. Its newest refresh token outlives it (7 d vs 1 h), so expiry
+    pruning never ends a live sign-in early.
+    """
+    if not isinstance(sid, str):
+        return False  # issued before access tokens carried "sid": sign in (or refresh) again
+    row = conn.execute(
+        "SELECT 1 FROM refresh_tokens WHERE family = ? AND username = ? LIMIT 1", (sid, username)
+    ).fetchone()
+    return row is not None
+
+
 # ── Dependencies ──────────────────────────────────────────────────────────────
 
 _bearer = HTTPBearer(auto_error=False, description="Access token from POST /api/v1/auth/token")
@@ -168,9 +207,17 @@ def current_user(
         claims = decode(credentials.credentials, "access")
     except TokenError as exc:
         raise _unauthorized(f"Invalid token: {exc}") from exc
+    subject = claims["sub"]
     with db.connect() as conn:
-        user = users.get(conn, claims["sub"])
-    if user is None or claims.get("gen") != user.token_gen:
+        if subject.startswith(devices.SUBJECT_PREFIX):
+            # Devices have no sign-in sessions: removal, disabling or key rotation end
+            # their tokens (via the key generation).
+            user = devices.principal(conn, subject.removeprefix(devices.SUBJECT_PREFIX))
+            live = True
+        else:
+            user = users.get(conn, subject)
+            live = _session_live(conn, subject, claims.get("sid"))
+    if user is None or claims.get("gen") != user.token_gen or not live:
         raise _unauthorized("Invalid token: signed out. Sign in again.")
     return user
 

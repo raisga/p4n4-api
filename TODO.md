@@ -11,23 +11,28 @@ Pending work for `p4n4-api`. The [README](README.md) describes the target surfac
 | Project info / validation | ✅ Working | `GET /api/v1/project`, `GET /api/v1/project/validate`, built on `p4n4-lib` (flat and multi-layer layouts). |
 | Stack status | ✅ Working | `GET /api/v1/stacks[/{stack}]` shells out to `docker compose ps` per stack, with image, version, ports and uptime per service, and `503` when Docker is unreachable. The dashboard's Services, Home and Clients tabs already use it, and fall back to port probes when it's unreachable. |
 | Health | ✅ Working | `/health`, `/ready` (project + Docker), `/api/v1/version`. |
-| Auth | ✅ Working (people) | Username/password sign-in → JWT, `operator`/`admin` roles, refresh rotation, `p4n4-api users` CLI. Device API keys come with M3. **The dashboard doesn't sign in yet**, so its status calls now get `401` and it falls back to port probes. |
+| Auth | ✅ Working | People: username/password → JWT, `operator`/`admin` roles, refresh rotation, `p4n4-api users` CLI and admin `/api/v1/users` endpoints. Devices: API key → JWT, `device` role. The dashboard signs in; it has no user- or device-management screen yet. |
+| Device registry | ✅ Working | `/api/v1/devices` CRUD, paginated, with API key rotation (M3). |
+| Stack control | ✅ Working | Up/down/restart (stack, all, or one service) as background jobs, container logs with SSE follow, audit log (M4). |
 | Upstream proxies | ❌ Missing | Nothing yet for InfluxDB, MQTT, Ollama, Letta or the Edge Impulse runner. |
 | Edge metrics | ✅ Working | `GET /api/v1/edge/metrics` via `psutil`, in the dashboard's contract. `inference_ms` waits for M6. |
 | CORS | ✅ Working | `P4N4_API_CORS_ORIGINS` allowlist; off by default. |
 | Packaging | ❌ Missing | Runs on the host only and binds `127.0.0.1`. No Dockerfile or compose file. |
-| Tests / CI | ✅ Working | 64 tests with synthetic projects and a stubbed Compose client. CI runs ruff and pytest on 3.11–3.13. |
+| Tests / CI | ✅ Working | 191 tests with synthetic projects, a stubbed Compose client for status and a fake `docker compose` script for control and logs. CI runs ruff and pytest on 3.11–3.13. |
 
 ## Housekeeping
 
-- [ ] The README links to `DESIGN.md` twice, but it doesn't exist: `API_DESIGN.md` (the Rust draft) was deleted in `290b8f8`. Either write a Python/FastAPI `DESIGN.md` (schemas, error codes, middleware) or remove the links.
-- [ ] Commit or drop the untracked `.gitattributes`.
-- [ ] Add response models (Pydantic) for the existing endpoints so `/openapi.json` documents real schemas instead of `dict`. The dashboard parses `stacks[].services[].{name,state,health}`, so treat that shape as a contract and test it.
-- [ ] Move settings to `pydantic-settings` (the README already names it) before the env var list grows.
-- [ ] Standard error body (`{"error": {"code", "message"}}`) and exception handlers, so clients get one error shape.
+- [x] The README linked to a `DESIGN.md` that doesn't exist (`API_DESIGN.md`, the Rust draft, was deleted in `290b8f8`). Links removed: schemas come from the OpenAPI spec (see response models below), the roadmap is this file.
+- [x] `.gitattributes` (LF line endings, binary types) is committed (`112b56f`).
+- [x] Response models (Pydantic) for every endpoint, so `/openapi.json` documents real schemas instead of `dict`. A test fails if any endpoint goes back to an untyped body, and another pins the dashboard's contracts (`stacks[].services[].{name,state,health}`, edge metrics' required fields, `/ready`'s `503` body). Manifest `template`/`dashboard` blocks stay free-form objects (p4n4-lib validates them).
+- [x] Settings on `pydantic-settings` (`p4n4_api/config.py`): typed, validated at startup (a bad `P4N4_API_PORT` or `P4N4_API_AUTH=maybe` fails with the variable's name), empty variables count as unset. New upstream settings (M5–M7) are one field each. `P4N4_API_AUTH` now also accepts `no`, but rejects unknown values instead of treating them as on.
+- [x] Standard error body (`{"error": {"code", "message"}}`, plus `fields` for request validation) from exception handlers in `p4n4_api/errors.py`, for HTTP errors, routing `404`/`405`, validation `422` and unhandled `500`s (no internals leaked). `ApiError` sets specific codes (`user_exists`, `last_admin`); the OpenAPI spec documents the shape for 4XX/5XX. The dashboard only branches on status codes, so nothing breaks there.
+  - [ ] Unhandled `500`s are produced outside `CORSMiddleware` (Starlette's `ServerErrorMiddleware`), so a browser on another origin sees a CORS error instead of the body. Only matters for cross-origin clients; fix if it gets in the way of debugging.
 - [x] `compose.ps` failures: Docker CLI missing, daemon down or Compose missing now return `503` from `/stacks` (checked with `docker version` first), so the dashboard falls back to port probes instead of showing every service as stopped.
   - [ ] Root cause is in `p4n4-lib`: `compose.ps` ignores Compose's exit code and returns `[]`. Make it raise, then drop the extra `docker version` call per request.
-- [ ] Structured logging with a request ID (`X-Request-ID` in and out).
+- [x] Structured logging with a request ID (`X-Request-ID` in and out): `p4n4_api/logs.py`. A sane incoming ID is kept, otherwise one is generated; it's on every response and every log line during the request. One access line per request (method, path, status, duration, real client behind trusted proxies). `P4N4_API_LOG_FORMAT=text|json`, `P4N4_API_LOG_LEVEL`. `p4n4-api serve` applies the format to uvicorn's lines too and replaces uvicorn's access log; plain `uvicorn p4n4_api.main:app` keeps uvicorn's logging.
+  - [ ] Unhandled `500`s are built by Starlette's `ServerErrorMiddleware`, outside ours, so they lack the `X-Request-ID` header (the log line still has it). Same root cause as the CORS note above; one fix (an outermost handler of our own) covers both.
+  - [ ] **🖥 dashboard** Send `X-Request-ID` on API calls and show it in error messages, so a report can be matched to the server log.
 
 ## Milestones
 
@@ -61,30 +66,44 @@ Gates every state-changing endpoint below.
 - [x] Bootstrap: `p4n4-api users add admin --role admin`; the server logs a hint at startup while there are no users. Also `users list|passwd|role|remove`.
 - [x] Rate limiting on `/auth/token` and `/auth/refresh` (10 per client address, then 1 per 6 s).
 - [x] Tests: expired, forged (wrong key, `alg: none`, garbage), wrong-type and revoked tokens; role ranking; refresh reuse; password/role changes and deleted users; rate limit; CLI.
-- [ ] **🖥 dashboard** Sign in: replace the role picker (`lib/core/session.dart`) with a username/password form, keep tokens in `flutter_secure_storage` (`secretKeys`), send `Authorization: Bearer` on API calls, refresh on `401`, and take the role from `/auth/me`. Until this ships, run the API with `P4N4_API_AUTH=off` to keep the dashboard's API status working.
-- [ ] **🖥 dashboard** Map roles: the dashboard's *client* view ↔ `operator`, *admin* ↔ `admin`. Decide whether a separate read-only `viewer` role is needed for client accounts before giving operators state-changing rights in M4.
-- [ ] Admin user-management endpoints (`GET/POST/PATCH/DELETE /api/v1/users`), so admins can create client accounts from the dashboard instead of the server's shell. Plus self-service `POST /api/v1/auth/password`.
-- [ ] Behind a reverse proxy (the dashboard's nginx), every client shares one address, so one attacker can fill the sign-in rate limit for everyone. Add a trusted-proxy setting that reads `X-Forwarded-For`, and/or also limit per username.
+- [x] **🖥 dashboard** Sign in: username/password form, refresh token in secure storage, `Authorization: Bearer` on API calls (`X-Upstream-Authorization` behind the dashboard's proxy), single-flight refresh on `401`, role from the token response. Role picker only when auth is off or the API is unreachable.
+- [x] **🖥 dashboard** Map roles (done as below; the `viewer` question is still open): the dashboard's *client* view ↔ `operator`, *admin* ↔ `admin`. Decide whether a separate read-only `viewer` role is needed for client accounts before giving operators state-changing rights in M4.
+- [x] Admin user-management endpoints (`GET/POST/PATCH/DELETE /api/v1/users`), so admins can create client accounts from the dashboard instead of the server's shell. The API refuses to demote or remove the last admin (`409`); the CLI still can, as the recovery path.
+- [x] Self-service `POST /api/v1/auth/password`: needs the current password, is rate-limited like sign-in, signs out every other sign-in and returns a new token pair.
+- [ ] **🖥 dashboard** Users screen for admins (list, add client account, change role, reset password, remove) and a *Change password* form for everyone. On `/auth/password` success, replace the stored tokens with the returned pair.
+- [x] Behind a reverse proxy (the dashboard's nginx), every client shares one address, so one attacker can fill the sign-in rate limit for everyone. `P4N4_API_TRUSTED_PROXIES` (IPs/CIDRs) now makes the limit per client via `X-Forwarded-For` (uvicorn's `ProxyHeadersMiddleware`: rightmost untrusted hop). Invalid entries fail at startup. `p4n4-api` runs uvicorn with `proxy_headers=False`, so it no longer trusts the header from `127.0.0.1` by default.
+  - No per-username limit: it would let anyone lock out a known user (e.g. `admin`) by failing sign-ins on purpose. Revisit only with a lockout-free design (e.g. counting failures per username + client pair) if distributed guessing shows up.
+  - [ ] **🖥 dashboard** Set `P4N4_API_TRUSTED_PROXIES=172.16.0.0/12` in the API's documented setup next to `P4N4_API_HOST` (dashboard `SERVICE_INTEGRATION.md`), and to `p4n4-dashboard` once the API is containerized (M10).
 - [ ] `p4n4 init` could create the first admin (and print its password once) so a new project needs no extra step. Coordinate with `p4n4-cli`.
-- [ ] Sign-out leaves the access token valid until it expires (≤ 1 h). If that's too long, add a deny-list of revoked access-token IDs, or shorten `ACCESS_TTL`.
+  - [x] API side: `p4n4-api users bootstrap [username]` creates an admin with a generated password and prints it once, only while there are no users (checked in the insert itself, so concurrent runs are safe). Idempotent, so an installer or container entrypoint can run it every time.
+  - [ ] CLI side: blocked on the `api` layer (M10). Today the API keeps its database in its own data dir, outside the project, and `p4n4-cli` doesn't install or know about it. Once the layer exists, `p4n4 init --api` (or `p4n4 up --api` on first start) runs `p4n4-api users bootstrap` in the API's container and passes its output through.
+- [x] Sign-out left the access token valid until it expired (≤ 1 h). Access tokens now carry their sign-in's ID (`sid`, the refresh-token family), and every request checks that the sign-in still has refresh tokens. So sign-out, refresh-token reuse, password changes and user removal end its access tokens at once, with no deny-list table and no shorter `ACCESS_TTL`. Tokens from before this change have no `sid` and get `401`; the dashboard's refresh-on-`401` gets a new one.
+  - `token_gen` is now redundant with this (a password change deletes the user's refresh tokens), but cheap; drop it in a later migration if the schema is touched anyway.
 
 ### M3: Device registry
 
-- [ ] Devices table in the existing SQLite database (`p4n4_api/db.py`: append to `MIGRATIONS`). M2 used stdlib `sqlite3` with versioned migrations instead of the SQLAlchemy + Alembic originally planned: two dependencies fewer on a Pi, and enough for a few tables. Revisit if the schema grows. In a container, `P4N4_API_DATA_DIR` must be a volume.
-- [ ] Add `device` to the roles (outside the operator/admin ranking: devices can only ingest) and accept `{"api_key": ...}` at `/auth/token`.
-- [ ] `GET/POST /api/v1/devices`, `GET/PATCH/DELETE /api/v1/devices/{id}` (admin writes, operator reads, paginated).
-- [ ] API key rotation. The README has it as `GET /devices/{id}/key`; it changes state, so make it `POST /devices/{id}/key`.
-- [ ] Keys stored as argon2id hashes, plaintext shown once.
+- [x] Devices table: migration 2 in `p4n4_api/db.py` (existing databases upgrade on next open). Still stdlib `sqlite3` with versioned migrations rather than SQLAlchemy + Alembic: two dependencies fewer on a Pi, and enough for a few tables. Revisit if the schema grows. In a container, `P4N4_API_DATA_DIR` must be a volume.
+- [x] `device` role, outside the operator/admin ranking (devices pass only `require_role("device")`, people never do). `/auth/token` takes `{"api_key": ...}` and returns an access token only; no refresh token, since the device keeps its key. Device tokens use the subject `device:<id>` (`:` can't be in a username, so no clash) and are re-checked per request: removal, disabling or rotation end them at once.
+- [x] `GET/POST /api/v1/devices`, `GET/PATCH/DELETE /api/v1/devices/{id}` (admin writes, operator reads; `limit`/`offset` pagination with `total`). IDs are lowercase slugs, since they'll tag telemetry in M5.
+- [x] API key rotation as `POST /devices/{id}/key` (the README's `GET` changed state).
+- [x] Keys: `p4n4_<12-hex key id>_<256-bit secret>`, argon2id-hashed, plaintext shown once (registration, rotation). The key id finds the device without trying every hash; the prefix lets secret scanners spot leaks.
+- [ ] `last_seen_at` is the last key exchange (hourly at most per device). Update it on telemetry ingest too once M5 exists, throttled so every reading isn't a database write.
+- [ ] Many devices behind one NAT share the sign-in rate limit (10, then 1 per 6 s, i.e. ~600 key exchanges an hour). Fine for a small fleet; give key exchange its own, larger bucket if fleets grow.
+- [ ] `p4n4-api devices` CLI (list/add/rotate/remove), like `users`, for setups without the dashboard. Optional: curl against the API works.
+- [ ] **🖥 dashboard** Devices screen: list with `last_seen_at`, register (show the key once with a copy button), rotate, disable, remove.
 
 ### M4: Stack control and logs
 
-The README defers these until auth lands. The dashboard's stack-controls menu is already built and disabled, waiting for them.
+API side done; the dashboard's stack-controls menu (built and disabled) can now be wired up.
 
-- [ ] **🖥 dashboard** `POST /api/v1/stacks/{stack}/{up|down|restart}` (admin), wrapping `p4n4_lib.compose.up/down`. Run as a background job: return `202` with a job ID plus `GET /api/v1/jobs/{id}`, since `up --pull` can take minutes on a Pi.
-- [ ] **🖥 dashboard** Per-service restart, if Compose wrappers for it are added to `p4n4-lib`.
-- [ ] **🖥 dashboard** `GET /api/v1/stacks/{stack}/logs?service=&tail=&follow=`: SSE when `follow=true`, wrapping `p4n4_lib.compose.logs`. Bound `tail` and kill the subprocess when the client disconnects.
-- [ ] Respect layer order (`layout.ordered()`) for "all stacks" operations: up in order, down in reverse.
-- [ ] Audit log of who ran what and when.
+- [x] `POST /api/v1/stacks/{stack}/{up|down|restart}` (admin) as background jobs: `202` + `Location`, `GET /api/v1/jobs[/{id}]` (operator+) with status and the last 500 lines of output. One worker, so Compose operations never overlap; an identical job still queued is reused (double clicks). 30-minute watchdog. `up?pull=true`; `down` never passes `-v`.
+- [x] Per-service restart: `POST /api/v1/stacks/{stack}/services/{service}/restart`, checked against `docker compose config --services` (so stopped services count, and nothing else reaches Compose's argv).
+- [x] `GET /api/v1/stacks/{stack}/logs?service=&tail=&follow=` (admin: logs can hold secrets): JSON, or SSE with `follow=true` (keep-alives every 15 s, `end` event with the exit code, `X-Accel-Buffering: no` for nginx). `tail` bounded to 1–5000; Compose is killed when the client disconnects (tested).
+- [x] `all` stacks: up in dependency order (`compose_dirs`), down in reverse, stopping at the first failure.
+- [x] Audit log (SQLite, migration 3; `GET /api/v1/audit`, admin): stack actions when queued and finished, user and device changes in the same transaction as the change. Entries carry the request ID, including for the job's own "finished" entry.
+- [ ] `p4n4_lib.compose.up/down/logs` print to the terminal and return only an exit code, so the API builds Compose's arguments itself (`jobs._commands`, `control._logs_cmd`) using `compose_cmd()`. Move argument builders (or output-capturing variants) into `p4n4-lib` so the CLI and API can't drift (e.g. the docker-compose v1 `pull` workaround is now in both).
+- [ ] Jobs are in memory (open question below). If an API restart mid-`up` matters, persist them in SQLite and mark running ones `interrupted` at startup.
+- [ ] **🖥 dashboard** Enable the stack-controls menu: call the actions, poll the job (or show its output live), and a logs viewer using the SSE stream (`EventSource` can't send `Authorization`, so read the stream with `fetch`).
 
 ### M5: Telemetry
 
@@ -129,7 +148,7 @@ Needed for the dashboard's *Fleet and alerts* roadmap. Scope it before starting.
 - [ ] Stack control from inside a container needs the Docker socket and the project directory mounted. That gives the container root-equivalent access to the host: document it, keep it opt-in, and consider a socket proxy that allows only the Compose calls in use.
 - [ ] Once containerized, the dashboard's nginx upstream changes from `host.docker.internal:8000` to `http://p4n4-api:8000` (`dashboard/SERVICE_INTEGRATION.md` §3.1).
 - [ ] Until then, document `P4N4_API_HOST=0.0.0.0` (or the bridge gateway IP) so the dashboard container can reach the host API.
-- [ ] Register an `api` layer in `p4n4-lib` and `p4n4 up --api` in the CLI.
+- [ ] Register an `api` layer in `p4n4-lib` and `p4n4 up --api` in the CLI. First start runs `p4n4-api users bootstrap` and shows the generated admin password (see M2).
 - [ ] Image publishing workflow (GHCR, semver tags, SBOM), matching the dashboard's `image.yml` plan.
 
 ### M11: Hardening and observability
