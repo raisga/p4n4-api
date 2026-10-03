@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, HTTPException
+from p4n4_lib import env as envutil
+from p4n4_lib import layout
 from p4n4_lib import manifest as mf
 
 from p4n4_api.config import load_settings
@@ -31,3 +33,27 @@ def get_project() -> tuple[Path, dict]:
 
 
 Project = Annotated[tuple[Path, dict], Depends(get_project)]
+
+
+def optional_project() -> tuple[Path, dict] | None:
+    """The project, or None when there isn't one (for endpoints that work without it)."""
+    try:
+        return get_project()
+    except HTTPException:
+        return None
+
+
+OptionalProject = Annotated[tuple[Path, dict] | None, Depends(optional_project)]
+
+
+def layer_env(project: tuple[Path, dict] | None, layer: str) -> dict[str, str]:
+    """A layer's .env from the project ({} without the project, the layer or the file).
+    The stacks' own settings, so upstream credentials need no second copy."""
+    if project is None:
+        return {}
+    project_dir, data = project
+    layers = data.get("layers", [])
+    if layer not in layers:
+        return {}
+    path = layout.layer_dir(project_dir, layers, layer) / ".env"
+    return envutil.load(path) if path.exists() else {}

@@ -1,0 +1,15 @@
+# Opt-in Docker access for p4n4-api: stack status (/stacks), up/down/restart,
+# and container logs. The socket gives the container root-equivalent control of
+# the host, so only add this where that's acceptable:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.docker.yml up -d
+#
+# DOCKER_GID must be the socket's group: stat -c %g /var/run/docker.sock
+services:
+  api:
+    environment:
+      P4N4_API_DOCKER: "on"
+    group_add:
+      - "${DOCKER_GID:?set DOCKER_GID to the group of /var/run/docker.sock}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

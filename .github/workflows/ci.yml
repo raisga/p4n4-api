@@ -31,5 +31,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+      # A real broker for the MQTT tests (skipped without it)
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mosquitto mosquitto-clients
       - run: pip install "p4n4-lib @ git+https://github.com/raisga/p4n4-lib.git" -e ".[dev]"
       - run: pytest --cov=p4n4_api --cov-report=term-missing

@@ -1,0 +1,136 @@
+name: Image
+
+# The p4n4-api image (Dockerfile) on GHCR, for linux/amd64 and linux/arm64
+# (Raspberry Pi 5):
+#   - push to main  → :edge
+#   - tag vX.Y.Z    → :X.Y.Z, :X.Y, :latest (the tag must match pyproject.toml)
+#   - pull request  → build and smoke-test only, nothing pushed
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/p4n4-api
+
+jobs:
+  image:
+    name: Build, test and push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # pyproject.toml is the source of truth for the version; __init__ and a release tag must agree.
+      - name: Version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          grep -q "__version__ = \"$version\"" p4n4_api/__init__.py \
+            || { echo "::error::p4n4_api/__init__.py doesn't say $version"; exit 1; }
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF_NAME#v}" != "$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match pyproject.toml version $version"
+            exit 1
+          fi
+
+      # The build stage runs pip, so arm64 is built under emulation.
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=edge,branch=main
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=pr
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      - name: Build for the smoke test (amd64)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: p4n4-api:smoke
+          build-args: VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # As deployed: read-only root, non-root, the project at its host path, Docker
+      # through the socket (docker-compose.docker.yml). An ai-only project, so /ready
+      # needs nothing but the project and Docker.
+      - name: Smoke test
+        run: |
+          project=$RUNNER_TEMP/project
+          mkdir -p "$project"
+          echo '{"schema_version": 1, "project": "smoke", "layers": ["ai"]}' > "$project/.p4n4.json"
+          docker run -d --name smoke -p 8000:8000 --read-only --tmpfs /tmp --cap-drop ALL \
+            -e P4N4_PROJECT_DIR="$project" -v "$project:$project:ro" \
+            -e P4N4_API_DOCKER=on -v /var/run/docker.sock:/var/run/docker.sock \
+            --group-add "$(stat -c %g /var/run/docker.sock)" p4n4-api:smoke
+          trap 'docker logs smoke; docker rm -f smoke >/dev/null' EXIT
+          for _ in $(seq 30); do curl -fsS localhost:8000/health && break; sleep 1; done
+          curl -fsS localhost:8000/health
+          curl -fsS localhost:8000/api/v1/version \
+            | jq -e --arg v "${{ steps.version.outputs.version }}" '.version == $v and .p4n4_lib != null'
+          curl -fsS localhost:8000/ready | jq -e '.checks.project.ok and .checks.docker.ok'
+          test "$(docker inspect -f '{{.State.Health.Status}}' smoke)" != unhealthy
+          password=$(docker exec smoke p4n4-api users bootstrap | sed -n "s/.*password: //p")
+          token=$(curl -fsS localhost:8000/api/v1/auth/token -H 'Content-Type: application/json' \
+            -d "{\"username\": \"admin\", \"password\": \"$password\"}" | jq -er .access_token)
+          curl -fsS -H "Authorization: Bearer $token" localhost:8000/api/v1/stacks | jq -e '.stacks'
+          curl -fsS -H "Authorization: Bearer $token" localhost:8000/api/v1/edge/metrics \
+            | jq -e '.cpu_percent >= 0 and .mem_percent > 0'
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8000/api/v1/project)" = 401
+
+      - name: Smoke test (no Docker access)
+        run: |
+          docker run -d --name smoke-nodocker -p 8001:8000 -e P4N4_API_DOCKER=off p4n4-api:smoke
+          trap 'docker logs smoke-nodocker; docker rm -f smoke-nodocker >/dev/null' EXIT
+          for _ in $(seq 30); do curl -fsS localhost:8001/health && break; sleep 1; done
+          # No project mounted: not ready, but Docker isn't what's missing
+          body=$(curl -s localhost:8001/ready)
+          echo "$body" | jq -e '.status == "unavailable" and .checks.docker.required == false'
+
+      - name: Scan for critical vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: p4n4-api:smoke
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (amd64, arm64)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true

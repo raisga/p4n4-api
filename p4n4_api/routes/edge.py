@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import psutil
 from fastapi import APIRouter
 from pydantic import BaseModel
+
+from p4n4_api import edge_runner
+from p4n4_api.config import load_settings
+from p4n4_api.deps import OptionalProject
 
 router = APIRouter(prefix="/edge", tags=["edge"])
 
@@ -33,6 +38,14 @@ def _temp_c() -> float | None:
     return round(sensors[names[0]][0].current, 1) if names else None
 
 
+def _disk_percent() -> float | None:
+    """Usage of P4N4_API_DISK_PATH, or None when it doesn't exist (e.g. a volume not mounted)."""
+    try:
+        return psutil.disk_usage(str(load_settings().disk_path)).percent
+    except OSError:
+        return None
+
+
 class EdgeMetrics(BaseModel):
     """p4n4-dashboard's edge metrics contract (dashboard/README.md#edge-metrics-contract).
     Only the percentages are required; unknown values are omitted, never sent as null."""
@@ -45,19 +58,41 @@ class EdgeMetrics(BaseModel):
     temp_c: float | None = None
     uptime_s: int | None = None
     load: list[float] | None = None  # 1, 5 and 15 minute load averages
-    inference_ms: float | None = None  # from the Edge Impulse runner, once M6 exists
+    # The edge runner's last pipeline inference latency (Edge Impulse or ONNX)
+    inference_ms: float | None = None
+
+
+RUNNER_TIMEOUT_S = 0.5  # metrics are polled often: never wait long for the runner
+
+
+async def inference_ms_from_runner(project: tuple | None) -> float | None:
+    if project is None or "edge" not in project[1].get("layers", []):
+        return None
+    try:
+        latency = (await edge_runner.health(RUNNER_TIMEOUT_S)).get("last_latency_ms")
+    except edge_runner.RunnerError:
+        return None
+    return float(latency) if isinstance(latency, int | float) else None
 
 
 @router.get("/metrics", response_model_exclude_none=True)
-def metrics() -> EdgeMetrics:
-    """Snapshot of the host's CPU, memory, disk, temperature, uptime and load."""
+async def metrics(project: OptionalProject) -> EdgeMetrics:
+    """Snapshot of the host's CPU, memory, disk, temperature, uptime and load, plus the
+    edge runner's last inference latency when the project has the edge layer."""
+    host, inference_ms = await asyncio.gather(
+        asyncio.to_thread(host_metrics), inference_ms_from_runner(project)
+    )
+    return host.model_copy(update={"inference_ms": inference_ms})
+
+
+def host_metrics() -> EdgeMetrics:
     mem = psutil.virtual_memory()
     return EdgeMetrics(
         cpu_percent=psutil.cpu_percent(interval=None),
         mem_percent=mem.percent,
         mem_used_mb=round(mem.used / 2**20),
         mem_total_mb=round(mem.total / 2**20),
-        disk_percent=psutil.disk_usage("/").percent,
+        disk_percent=_disk_percent(),
         temp_c=_temp_c(),
         uptime_s=int(time.time() - psutil.boot_time()),
         load=[round(x, 2) for x in psutil.getloadavg()],

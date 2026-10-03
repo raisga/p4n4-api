@@ -1,0 +1,16 @@
+# Keeps pinned versions current: base images (pinned by digest in the
+# Dockerfile), GitHub Actions and Python packages.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly

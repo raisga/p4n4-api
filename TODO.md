@@ -1,6 +1,6 @@
 # TODO
 
-_Last updated: 2026-10-01_
+_Last updated: 2026-10-02_
 
 Pending work for `p4n4-api`. The [README](README.md) describes the target surface. This file tracks what's built, what's missing, and the order to build it in. The main consumer is [`p4n4-dashboard`](../dashboard/), so items it's waiting on are marked **🖥 dashboard**.
 
@@ -14,11 +14,15 @@ Pending work for `p4n4-api`. The [README](README.md) describes the target surfac
 | Auth | ✅ Working | People: username/password → JWT, `operator`/`admin` roles, refresh rotation, `p4n4-api users` CLI and admin `/api/v1/users` endpoints. Devices: API key → JWT, `device` role. The dashboard signs in; it has no user- or device-management screen yet. |
 | Device registry | ✅ Working | `/api/v1/devices` CRUD, paginated, with API key rotation (M3). |
 | Stack control | ✅ Working | Up/down/restart (stack, all, or one service) as background jobs, container logs with SSE follow, audit log (M4). |
-| Upstream proxies | ❌ Missing | Nothing yet for InfluxDB, MQTT, Ollama, Letta or the Edge Impulse runner. |
-| Edge metrics | ✅ Working | `GET /api/v1/edge/metrics` via `psutil`, in the dashboard's contract. `inference_ms` waits for M6. |
+| Telemetry | ✅ Working | Device ingest to InfluxDB (+ marked MQTT publish), Flux queries, live SSE stream from MQTT (M5). |
+| Upstream proxies | ✅ Working | InfluxDB, MQTT (M5), the edge runner (M6), Ollama and Letta (M7). |
+| MQTT publish | ✅ Working | `POST /api/v1/mqtt/publish` with QoS/retain, topic allow/deny lists, audited (M8). |
+| AI agents | ✅ Working | Ollama models, streamed chat/generate, Letta agents, optional system status in prompts (M7). |
+| Edge metrics | ✅ Working | `GET /api/v1/edge/metrics` via `psutil`, in the dashboard's contract, with the runner's `inference_ms` (M6). |
+| Inference | ✅ Working | Edge runner (Edge Impulse, ONNX or mock backend): model info, on-demand inference, stored results (M6). |
 | CORS | ✅ Working | `P4N4_API_CORS_ORIGINS` allowlist; off by default. |
-| Packaging | ❌ Missing | Runs on the host only and binds `127.0.0.1`. No Dockerfile or compose file. |
-| Tests / CI | ✅ Working | 191 tests with synthetic projects, a stubbed Compose client for status and a fake `docker compose` script for control and logs. CI runs ruff and pytest on 3.11–3.13. |
+| Packaging | ✅ Working | Multi-arch, non-root image (`Dockerfile`, GHCR workflow) and `docker-compose.yml` on `p4n4-net`; Docker socket opt-in (M10). Not yet a p4n4 layer in the CLI. |
+| Tests / CI | ✅ Working | 340 tests with synthetic projects, a stubbed Compose client for status and a fake `docker compose` script for control and logs. CI runs ruff and pytest on 3.11–3.13. |
 
 ## Housekeeping
 
@@ -46,9 +50,9 @@ Small items the dashboard needs now. They're read-only or config-only, so they d
   - `cpu_percent`, `mem_percent` (required); `mem_used_mb`, `mem_total_mb`, `disk_percent`, `temp_c`, `uptime_s`, `load`, `inference_ms` (optional: omit rather than send `null` when unknown).
   - The API runs on the edge host in v0.1, so `psutil` on the host is enough. `temp_c` comes from a list of known CPU/SoC sensors (`cpu_thermal`, `coretemp`, `k10temp`, …), then any sensor named `*cpu*`/`*soc*`. `thermal_zone0` and the first sensor listed are deliberately *not* used: on x86 they're often `acpitz`, a board sensor.
   - [ ] Check `temp_c` on a real Raspberry Pi 5 and on a Jetson, and add their sensor names if they're missing.
-  - [ ] `disk_percent` is for `/`. Consider a `P4N4_API_DISK_PATH` setting if data lives on another volume (e.g. an SSD for InfluxDB).
+  - [x] `P4N4_API_DISK_PATH` picks the filesystem for `disk_percent` (default `/`; omitted if the path is missing).
   - `inference_ms` from the Edge Impulse runner's last result, once M6 exists. Leave it out until then.
-  - Once containerized, host metrics need `/proc` and `/sys` mounted read-only (or `pid: host`). Document it.
+  - Containerized, `/proc` and `/sys` already show the host's CPU, memory, load, uptime and temperatures (checked on x86: `temp_c` present); no extra mounts. `disk_percent` is Docker's data root unless a disk is mounted and `P4N4_API_DISK_PATH` set. Documented in the README.
 - [x] **🖥 dashboard** `P4N4_API_CORS_ORIGINS`: FastAPI `CORSMiddleware` with an explicit allowlist and no `*` alongside credentials. Needed for the dashboard's web dev server and for the **Clients** tab on web, which calls other deployments' APIs cross-origin (`dashboard/SERVICE_INTEGRATION.md` §5.3).
 - [x] **🖥 dashboard** Richer stack status: `image`, `version`, `status`, `exit_code`, `ports`, `started_at`, `uptime_s` per service (uptime from one `docker inspect` per stack).
   - [ ] Dashboard side: show these in Services (its `ComposeService` ignores unknown fields, so nothing breaks meanwhile).
@@ -73,7 +77,7 @@ Gates every state-changing endpoint below.
 - [ ] **🖥 dashboard** Users screen for admins (list, add client account, change role, reset password, remove) and a *Change password* form for everyone. On `/auth/password` success, replace the stored tokens with the returned pair.
 - [x] Behind a reverse proxy (the dashboard's nginx), every client shares one address, so one attacker can fill the sign-in rate limit for everyone. `P4N4_API_TRUSTED_PROXIES` (IPs/CIDRs) now makes the limit per client via `X-Forwarded-For` (uvicorn's `ProxyHeadersMiddleware`: rightmost untrusted hop). Invalid entries fail at startup. `p4n4-api` runs uvicorn with `proxy_headers=False`, so it no longer trusts the header from `127.0.0.1` by default.
   - No per-username limit: it would let anyone lock out a known user (e.g. `admin`) by failing sign-ins on purpose. Revisit only with a lockout-free design (e.g. counting failures per username + client pair) if distributed guessing shows up.
-  - [ ] **🖥 dashboard** Set `P4N4_API_TRUSTED_PROXIES=172.16.0.0/12` in the API's documented setup next to `P4N4_API_HOST` (dashboard `SERVICE_INTEGRATION.md`), and to `p4n4-dashboard` once the API is containerized (M10).
+  - [ ] **🖥 dashboard** Set `P4N4_API_TRUSTED_PROXIES=172.16.0.0/12` in the API's documented setup next to `P4N4_API_HOST` (dashboard `SERVICE_INTEGRATION.md`). The API's compose file already sets it (M10).
 - [ ] `p4n4 init` could create the first admin (and print its password once) so a new project needs no extra step. Coordinate with `p4n4-cli`.
   - [x] API side: `p4n4-api users bootstrap [username]` creates an admin with a generated password and prints it once, only while there are no users (checked in the insert itself, so concurrent runs are safe). Idempotent, so an installer or container entrypoint can run it every time.
   - [ ] CLI side: blocked on the `api` layer (M10). Today the API keeps its database in its own data dir, outside the project, and `p4n4-cli` doesn't install or know about it. Once the layer exists, `p4n4 init --api` (or `p4n4 up --api` on first start) runs `p4n4-api users bootstrap` in the API's container and passes its output through.
@@ -107,32 +111,47 @@ API side done; the dashboard's stack-controls menu (built and disabled) can now 
 
 ### M5: Telemetry
 
-- [ ] Async InfluxDB client (`INFLUXDB_URL`, `INFLUXDB_TOKEN`, org, bucket).
-- [ ] `POST /api/v1/telemetry` (device role): batch JSON → line protocol → InfluxDB, and publish to MQTT so Node-RED flows still fire.
-- [ ] `GET /api/v1/telemetry` (operator): query params (`device`, `measurement`, `field`, `start`, `stop`, `every`, `agg`) compiled to Flux. Never accept raw Flux from clients.
-- [ ] MQTT client (`aiomqtt`) with one persistent subscription, started and stopped in the app lifespan, with reconnects.
-- [ ] **🖥 dashboard** `GET /api/v1/telemetry/stream` (SSE), fed by that subscription through a broadcast queue, with filters and heartbeats. Live sensor values for Home and Edge.
+- [x] Async InfluxDB client over `httpx` (`p4n4_api/influx.py`; no `influxdb-client`). Token, org and bucket default to the project's `iot/.env`, so a host-run API needs no setup; `P4N4_API_INFLUXDB_*` override. `/ready` checks InfluxDB (required) and reports MQTT (not required) when the project has the iot layer.
+- [x] `POST /api/v1/telemetry` (device role): writes InfluxDB itself with Node-RED's schema (`sensor_data`, tags `device`/`sensor`, numbers as floats so field types never conflict) and the device's timestamps, `201` once stored; then publishes to `sensors/{device}/{sensor}` with `"_stored_by": "p4n4-api"`. The IoT stack's Node-RED flow skips marked messages (changed in `stacks/iot`, both format functions), so nothing is stored twice and other flows still fire. Updates `last_seen_at` (throttled, closes the M3 item).
+- [x] `GET /api/v1/telemetry` (operator): `device`, `sensor`, `field`, `start`, `stop`, `every`, `agg`, `limit` compiled to Flux; values are validated or quoted (injection tests). The README's `measurement` parameter became `sensor`: everything is in `sensor_data`, and the sensor is a tag.
+- [x] MQTT (`aiomqtt`): one connection, started and stopped with the app, subscribed to `sensors/+/+`, reconnecting with backoff (1–30 s, logs on state changes only). Tested against a real throwaway mosquitto (skipped when it isn't installed).
+- [x] `GET /api/v1/telemetry/stream` (SSE, operator): per-client bounded queue (slow clients drop their oldest readings and get a `dropped` event), `device`/`sensor` filters, `status` event, keep-alives. Readings the API ingests while the broker is down still reach live streams.
+- [ ] **🖥 dashboard** Live sensor values for Home and Edge from the stream (read with `fetch`: `EventSource` can't send `Authorization`), and history charts from `GET /telemetry`.
+- [ ] Deploy the updated Node-RED flow (p4n4-iot) together with this API version: an older flow stores API readings a second time (with arrival time). `p4n4 update` / re-scaffolding picks it up; existing projects need the new `flows.json`.
+- [ ] Inference results (`inference/{device}/result`, M6) and the `sandbox/` topics aren't ingested or streamed yet.
+- [ ] Batches are written in one request; InfluxDB rejects the whole batch on one bad point (`422 influxdb_rejected`). If partial success is needed, retry point by point and report which failed.
 - [ ] **🖥 dashboard** Metrics history for the Edge tab's planned longer ranges and CSV export: either store `edge/metrics` samples in InfluxDB, or read them from an existing exporter.
 
 ### M6: Inference
 
-- [ ] Edge Impulse runner client (`EDGE_RUNNER_URL`).
-- [ ] `POST /api/v1/inference`: forward a feature vector, return the classification and timing.
-- [ ] `GET /api/v1/inference/results`: recent results from InfluxDB `ai_events`.
-- [ ] Feed the last inference latency into `edge/metrics` (`inference_ms`).
+- [x] Runner client (`p4n4_api/edge_runner.py`, `P4N4_API_EDGE_RUNNER_URL`) for all of the runner's backends: Edge Impulse `.eim`, ONNX and mock. `GET /api/v1/inference/runner` shows which is active, the model, labels and the expected feature count (Edge Impulse `input_features_count`, ONNX input shape). Model info is cached 30 s.
+- [x] `POST /api/v1/inference` (operator): checks the vector length against the model first (`422 wrong_feature_count`), returns label, confidence, anomaly score, latency and backend. Not published or stored, like the runner's own endpoint.
+  - The runner answered a model failure on `/api/v1/infer` with a simulated (mock) result. Fixed in `stacks/edge` (HTTP path only: the MQTT pipeline still falls back so it keeps running): it now returns `422` with the error. The API also refuses a mock result from a real backend (`502`), for runners without the fix.
+- [x] `GET /api/v1/inference/results` (operator): `ai_events` / `inference_result`, pivoted to one row per result, newest first; `device`, `label`, `backend`, time range, `limit`. Bucket from the project's `edge/.env`.
+- [x] `edge/metrics` `inference_ms`: the runner's `/health` now reports `last_latency_ms` (added in `stacks/edge`); read with a 0.5 s timeout, only for projects with the edge layer. `/ready` reports the runner (not required).
+- [ ] Deploy the updated runner (p4n4-edge) with this API version for `inference_ms` and proper `422`s; older runners work, without `inference_ms`, and their mock fallbacks surface as `502`.
+- [ ] **🖥 dashboard** Edge tab: runner backend/model card, a "classify" form, recent results, and `inference_ms` on the metrics chart.
+- [ ] Inference results also reach MQTT (`inference/{device}/result`); add them to the live stream (`/telemetry/stream` subscribes to `sensors/+/+` only).
 
 ### M7: AI agents
 
 The dashboard calls Ollama and Letta directly today. Routing through the API puts auth in front of them and removes the Letta password from the client.
 
-- [ ] **🖥 dashboard** `GET /api/v1/agents/models`: Ollama model list (the dashboard uses `/api/tags`).
-- [ ] **🖥 dashboard** `POST /api/v1/agents/generate` and a chat variant with **streaming** (NDJSON or SSE, matching what the dashboard parses from Ollama `/api/chat`). Disable buffering and allow long timeouts, since generations on a Pi are slow.
-- [ ] **🖥 dashboard** `GET /api/v1/agents` and `POST /api/v1/agents/{id}/chat` for Letta (`LETTA_URL`, `LETTA_SERVER_PASSWORD` kept server side).
-- [ ] **🖥 dashboard** Optional "system context" for the dashboard's planned *include system status* button: an endpoint (or a flag on chat) that adds current stack status and edge readings to the prompt.
+- [x] `GET /api/v1/agents/models`: Ollama's `/api/tags`, reshaped (`name`, `size`, family, parameter size, quantization). `models[].name` is where the dashboard already reads it.
+- [x] `POST /api/v1/agents/chat` and `/generate`: Ollama's NDJSON chunks streamed through unchanged, so the dashboard's `OllamaClient` parser works as is (only its URLs and auth change); `stream: false` for one JSON reply. Upstream errors before the first chunk become API errors (`model_not_found`, `ollama_unavailable`); a connection lost mid-reply ends with an `error` chunk. 10-minute read timeout, `X-Accel-Buffering: no`, and disconnecting closes the Ollama request (tested). Checked against a real Ollama (model list, not-found error).
+- [x] `GET /api/v1/agents` and `POST /api/v1/agents/{id}/chat` for Letta: password from `ai/.env` (`LETTA_SERVER_PASSWORD`) or `P4N4_API_LETTA_PASSWORD`, sent only API → Letta. Replies reshaped to `{reply, messages: [{type, text}]}`.
+- [x] `include_status: true` on all three chats: stack running/total with stopped and unhealthy services, edge host metrics and last inference latency, as a system message (Ollama) or before the message (Letta). `/ready` reports Ollama and Letta (not required) for projects with the ai layer.
+- [ ] **🖥 dashboard** Point `OllamaClient` at `/api/v1/agents/models` (it reads `models[].name`) and `/api/v1/agents/chat` with `Authorization: Bearer`, and `LettaClient` at `/api/v1/agents` (`agents[]`) and `/{id}/chat` (`reply`); drop the stored Letta token. Add the *include system status* toggle (`include_status`).
+- [ ] Letta replies aren't streamed (Letta has `/messages/stream`; the dashboard doesn't stream Letta either). Add if replies get long.
+- [ ] Pulling and deleting Ollama models (admin): long-running and disk-heavy, so as a job like stack actions (M4), with progress from Ollama's `/api/pull` stream.
+- [ ] Rate or concurrency limit on generation: one Pi can only run a model or two at a time, and a burst of chats queues inside Ollama.
 
 ### M8: MQTT publish
 
-- [ ] `POST /api/v1/mqtt/publish` (operator) with QoS and retain. Optionally restrict topics with an allowlist or prefix.
+- [x] `POST /api/v1/mqtt/publish` (operator) with QoS 0–2 and retain (empty retained payload clears), string or JSON payloads up to 256 KB, through the persistent MQTT connection; QoS 1/2 wait for the broker's acknowledgement (10 s). Tested against a real mosquitto (retained message read back).
+- [x] Topic rules: `P4N4_API_MQTT_PUBLISH_ALLOW` (default `#`) and `_DENY` (default `sensors/#,inference/#`, deny wins), MQTT filters checked at startup. The default deny keeps operator (client) accounts from injecting readings that Node-RED would store as device data; `sandbox/...` stays open for test data. No wildcards or `$` topics. Every publish is audited.
+- [ ] Per-role or per-user topic rules (e.g. admins may publish to `sensors/` to simulate a device), if the global lists turn out too coarse.
+- [ ] **🖥 dashboard** A "send command" control (topic + payload), and showing `403 topic_not_allowed` clearly.
 
 ### M9: Fleet and alerts
 
@@ -144,12 +163,15 @@ Needed for the dashboard's *Fleet and alerts* roadmap. Scope it before starting.
 
 ### M10: Packaging and deployment
 
-- [ ] `Dockerfile` (multi-stage, multi-arch amd64/arm64, non-root) and `docker-compose.yml` on the external `p4n4-net` network.
-- [ ] Stack control from inside a container needs the Docker socket and the project directory mounted. That gives the container root-equivalent access to the host: document it, keep it opt-in, and consider a socket proxy that allows only the Compose calls in use.
-- [ ] Once containerized, the dashboard's nginx upstream changes from `host.docker.internal:8000` to `http://p4n4-api:8000` (`dashboard/SERVICE_INTEGRATION.md` §3.1).
-- [ ] Until then, document `P4N4_API_HOST=0.0.0.0` (or the bridge gateway IP) so the dashboard container can reach the host API.
-- [ ] Register an `api` layer in `p4n4-lib` and `p4n4 up --api` in the CLI. First start runs `p4n4-api users bootstrap` and shows the generated admin password (see M2).
-- [ ] Image publishing workflow (GHCR, semver tags, SBOM), matching the dashboard's `image.yml` plan.
+- [x] `Dockerfile`: multi-stage, Python 3.12 slim, non-root (UID 10001), base images pinned by digest (Dependabot), static `docker` CLI + Compose plugin from `docker:29-cli`, `p4n4-lib` from git (`P4N4_LIB` build arg), `/health` healthcheck. `docker-compose.yml` on the external `p4n4-net` as `p4n4-api`: read-only root, `cap_drop: ALL`, `no-new-privileges`, data in the `p4n4-api-data` volume, port on `127.0.0.1` only, upstream URLs pointing at the stacks' containers, `P4N4_API_TRUSTED_PROXIES=172.16.0.0/12`.
+- [x] Docker access is opt-in: `P4N4_API_DOCKER=off` in the base compose file (`/stacks` → `503` so the dashboard falls back to probes; `/ready` doesn't require Docker). `docker-compose.docker.yml` mounts the socket with `group_add: DOCKER_GID`. The project is mounted read-only at its host path, so Compose's relative bind mounts resolve to the right host directories. Checked against a real IoT project: status, logs, `compose config` paths, InfluxDB/MQTT over `p4n4-net`, host metrics. `up`/`down` not run from the container yet (live stack).
+  - [ ] A socket proxy (e.g. `tecnativa/docker-socket-proxy`) allowing only the calls `compose ps/up/down/restart/logs/config` and `inspect` need. Compose needs more of the API than it looks (networks, images, volumes for `up`), so test `up` with a real stack before recommending it.
+  - [ ] Run `up`/`down`/`restart` from the container against a scratch stack (with a `build:` service, like the edge runner) and add it to the smoke test.
+- [x] Image workflow (`.github/workflows/image.yml`): amd64 + arm64 (QEMU for the pip stage), `:edge` from main, `:X.Y.Z`/`:X.Y`/`:latest` from tags (must match `pyproject.toml` and `__version__`), smoke tests (with the socket: version, ready, bootstrap + sign-in, stacks, metrics; without: `/ready`'s docker check not required), Trivy, provenance and SBOM. Both smoke tests pass locally; the workflow itself hasn't run on GitHub yet.
+- [ ] **🖥 dashboard** Once the image is published, the dashboard's nginx upstream changes from `host.docker.internal:8000` to `http://p4n4-api:8000` and `extra_hosts` goes (`dashboard/SERVICE_INTEGRATION.md` §3.1, `docker-compose.yml`).
+- [x] Host-run setup for the dashboard container documented (README "Network Requirements": bind the bridge gateway, trusted proxies).
+- [ ] Register an `api` layer in `p4n4-lib` and `p4n4 up --api` in the CLI. First start runs `p4n4-api users bootstrap` and shows the generated admin password (see M2). The compose file here is the starting point; the layer has to supply `P4N4_PROJECT_DIR` (the project itself) and `DOCKER_GID`.
+- [ ] Publish `p4n4-lib` to PyPI (or a wheel in a release) so the image build doesn't need git and a network fetch of an unpinned `main`. Until then, release builds should pass `P4N4_LIB=...@<tag>`.
 
 ### M11: Hardening and observability
 
@@ -163,6 +185,6 @@ Needed for the dashboard's *Fleet and alerts* roadmap. Scope it before starting.
 
 - **Long-running work:** in-process background tasks are enough for one Pi. Is a job table in SQLite needed so jobs survive restarts?
 - **Sync vs async:** routes are sync and run in the threadpool because `p4n4_lib.compose` uses `subprocess`. Upstream clients (InfluxDB, MQTT, HTTP) should be async. Keep both styles, or wrap `compose` in `anyio.to_thread`?
-- **Proxy vs re-shape:** for Ollama/Letta, pass the upstream API through as-is (less work, the dashboard client barely changes) or define p4n4-owned schemas (stable when upstreams change)?
+- ~~**Proxy vs re-shape** for Ollama/Letta~~ — decided in M7: p4n4-owned endpoints and request schemas, Ollama's streamed chunks passed through unchanged (the dashboard already parses them), Letta replies reshaped.
 - **One API per deployment vs fleet:** the Clients tab and alerts want a cross-deployment view. Keep p4n4-api single-deployment and build fleet features elsewhere?
 - **n8n:** the README doesn't plan anything for n8n. Is a thin proxy needed to trigger workflows from the CLI or dashboard?

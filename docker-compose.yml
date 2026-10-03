@@ -1,0 +1,53 @@
+# p4n4-api as a p4n4 service on p4n4-net. The dashboard (and anything else on
+# the network) reaches it at http://p4n4-api:8000; the host port is bound to
+# 127.0.0.1 unless P4N4_API_BIND says otherwise.
+#
+#   cp .env.example .env    # set P4N4_PROJECT_DIR
+#   docker compose up -d
+#   docker compose exec api p4n4-api users bootstrap    # first admin, password shown once
+#
+# Stack status and control need the Docker socket, which is root on the host:
+# it's opt-in, with docker-compose.docker.yml (see README "Running in Docker").
+services:
+  api:
+    image: ghcr.io/raisga/p4n4-api:${P4N4_API_VERSION:-0.1.0}
+    container_name: p4n4-api
+    restart: unless-stopped
+    ports:
+      - "${P4N4_API_BIND:-127.0.0.1}:${P4N4_API_PUBLISH_PORT:-8000}:8000"
+    # Everything else (CORS, MQTT credentials, log format, ...) from .env, if present
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Mounted at the same path as on the host: Compose resolves the stacks'
+      # relative bind mounts (./config, ./data) to host paths for the daemon.
+      P4N4_PROJECT_DIR: ${P4N4_PROJECT_DIR:?set P4N4_PROJECT_DIR to the p4n4 project directory}
+      P4N4_API_DOCKER: ${P4N4_API_DOCKER:-off}
+      # The stacks' containers on p4n4-net, instead of the host's published ports
+      P4N4_API_INFLUXDB_URL: ${P4N4_API_INFLUXDB_URL:-http://p4n4-influxdb:8086}
+      P4N4_API_MQTT_HOST: ${P4N4_API_MQTT_HOST:-p4n4-mqtt}
+      P4N4_API_EDGE_RUNNER_URL: ${P4N4_API_EDGE_RUNNER_URL:-http://p4n4-ei-runner:8080}
+      P4N4_API_OLLAMA_URL: ${P4N4_API_OLLAMA_URL:-http://p4n4-ollama:11434}
+      P4N4_API_LETTA_URL: ${P4N4_API_LETTA_URL:-http://p4n4-letta:8283}
+      # The dashboard's nginx (and other containers) on Docker's default bridge networks
+      P4N4_API_TRUSTED_PROXIES: ${P4N4_API_TRUSTED_PROXIES:-172.16.0.0/12}
+    volumes:
+      - p4n4-api-data:/data
+      - ${P4N4_PROJECT_DIR}:${P4N4_PROJECT_DIR}:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks:
+      - p4n4-net
+
+volumes:
+  p4n4-api-data:
+    name: p4n4-api-data
+
+networks:
+  p4n4-net:
+    external: true
+    name: p4n4-net

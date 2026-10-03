@@ -5,6 +5,8 @@ from __future__ import annotations
 from p4n4_lib import env as envutil
 from p4n4_lib import manifest as mf
 
+from p4n4_api.docker import daemon_error as real_daemon_error  # before docker_up replaces it
+
 # ── /health ───────────────────────────────────────────────────────────────────
 
 
@@ -155,6 +157,24 @@ def test_stacks_503_when_docker_down(client, multi_project, monkeypatch):
         assert "cannot connect" in r.json()["error"]["message"]
 
 
+def test_docker_off(client, multi_project, monkeypatch):
+    # A container without the Docker socket: status falls back, /ready stays ready.
+    monkeypatch.setenv("P4N4_API_DOCKER", "off")
+    monkeypatch.setattr("p4n4_api.docker.daemon_error", real_daemon_error)
+    r = client.get("/api/v1/stacks")
+    assert r.status_code == 503
+    assert "P4N4_API_DOCKER=off" in r.json()["error"]["message"]
+    # Without the iot layer, nothing else /ready requires is missing in tests.
+    mf.save(multi_project / mf.MANIFEST_FILE, mf.create("ai-only", ["ai"]))
+    r = client.get("/ready")
+    assert r.status_code == 200
+    assert r.json()["checks"]["docker"] == {
+        "ok": False,
+        "detail": "Docker access is disabled (P4N4_API_DOCKER=off).",
+        "required": False,
+    }
+
+
 def test_stack_service_details(client, multi_project, monkeypatch):
     from datetime import UTC, datetime, timedelta
 
@@ -248,13 +268,39 @@ def test_image_version():
 # ── /ready, /api/v1/version ───────────────────────────────────────────────────
 
 
-def test_ready(client, flat_project):
+def test_ready(client, multi_project):
     r = client.get("/ready")
-    assert r.status_code == 200
-    assert r.json() == {
-        "status": "ready",
-        "checks": {"project": {"ok": True}, "docker": {"ok": True}},
-    }
+    assert r.json()["checks"]["project"] == {"ok": True}
+    assert r.json()["checks"]["docker"] == {"ok": True}
+
+
+def test_ready_without_iot_layer(client, tmp_path, monkeypatch):
+    from p4n4_lib import manifest as mf
+
+    mf.save(tmp_path / mf.MANIFEST_FILE, mf.create("ai-only", ["ai"]))
+    monkeypatch.setenv("P4N4_PROJECT_DIR", str(tmp_path))
+    r = client.get("/ready")
+    assert r.status_code == 200  # Ollama and Letta are reported, not required
+    checks = r.json()["checks"]
+    assert "influxdb" not in checks and "mqtt" not in checks
+    assert checks["ollama"]["required"] is False and checks["letta"]["ok"] is False
+
+
+def test_ready_checks_influxdb_and_reports_mqtt(client, flat_project, influxdb):
+    import httpx
+
+    influxdb.handler = lambda request: httpx.Response(200, json={"status": "pass"})
+    r = client.get("/ready")
+    assert r.status_code == 200  # MQTT is down, but it isn't required
+    checks = r.json()["checks"]
+    assert checks["influxdb"] == {"ok": True}
+    assert checks["mqtt"] == {"ok": False, "detail": "not started", "required": False}
+    assert str(influxdb.requests[0].url) == "http://localhost:8086/health"
+
+    influxdb.handler = lambda request: httpx.Response(503)
+    r = client.get("/ready")
+    assert r.status_code == 503
+    assert r.json()["checks"]["influxdb"] == {"ok": False, "detail": "health check returned 503"}
 
 
 def test_ready_reports_failures(client, tmp_path, monkeypatch):
@@ -338,6 +384,24 @@ def test_edge_metrics_contract(client, tmp_path, monkeypatch):
     assert None not in body.values()
 
 
+def test_edge_metrics_disk_path(client, tmp_path, monkeypatch):
+    from p4n4_api.routes import edge
+
+    seen = []
+    real_disk_usage = edge.psutil.disk_usage
+    usage = type("Usage", (), {"percent": 42.0})
+    monkeypatch.setattr(edge.psutil, "disk_usage", lambda path: seen.append(path) or usage)
+    monkeypatch.setenv("P4N4_API_DISK_PATH", str(tmp_path))
+    assert client.get("/api/v1/edge/metrics").json()["disk_percent"] == 42.0
+    assert seen == [str(tmp_path)]
+
+    # A path that doesn't exist (volume not mounted) omits the field instead of failing.
+    monkeypatch.setattr(edge.psutil, "disk_usage", real_disk_usage)
+    monkeypatch.setenv("P4N4_API_DISK_PATH", str(tmp_path / "missing"))
+    r = client.get("/api/v1/edge/metrics")
+    assert r.status_code == 200 and "disk_percent" not in r.json()
+
+
 def test_edge_metrics_prefers_cpu_sensor(client, monkeypatch):
     from p4n4_api.routes import edge
 
@@ -383,7 +447,10 @@ def test_every_endpoint_documents_its_response(anon):
             ok = next((op["responses"][s] for s in ("200", "201") if s in op["responses"]), None)
             if ok is None:
                 continue  # 204: no body
-            schema = ok.get("content", {}).get("application/json", {}).get("schema", {})
+            content = ok.get("content", {})
+            if set(content) == {"text/event-stream"}:
+                continue  # a stream: its events are documented in the description
+            schema = content.get("application/json", {}).get("schema", {})
             if not schema or schema.get("additionalProperties") is True:
                 untyped.append(f"{method.upper()} {path}")
     assert untyped == []

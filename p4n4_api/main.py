@@ -13,10 +13,24 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from p4n4_api import __version__, auth, db, errors, jobs, logs, users
 from p4n4_api.config import load_settings
+from p4n4_api.mqtt import bridge
+from p4n4_api.routes import (
+    agents,
+    control,
+    devices,
+    edge,
+    health,
+    inference,
+    project,
+    stacks,
+    telemetry,
+)
 from p4n4_api.routes import audit as audit_routes
 from p4n4_api.routes import auth as auth_routes
-from p4n4_api.routes import control, devices, edge, health, project, stacks
 from p4n4_api.routes import jobs as jobs_routes
+from p4n4_api.routes import (
+    mqtt as mqtt_routes,
+)
 from p4n4_api.routes import users as users_routes
 
 log = logging.getLogger("p4n4_api")
@@ -36,7 +50,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "No users yet. Create an admin with: p4n4-api users add admin --role admin "
             "(or `p4n4-api users bootstrap` for a generated password)"
         )
+    if settings.mqtt_enabled:
+        bridge.start(
+            settings.mqtt_host, settings.mqtt_port, settings.mqtt_username, settings.mqtt_password
+        )
     yield
+    await bridge.stop()
     jobs.shutdown()
 
 
@@ -98,8 +117,13 @@ def create_app() -> FastAPI:
     api_v1.include_router(control.router, dependencies=operator)
     api_v1.include_router(jobs_routes.router, dependencies=operator)
     api_v1.include_router(edge.router, dependencies=operator)
+    api_v1.include_router(inference.router, dependencies=operator)
+    api_v1.include_router(agents.router, dependencies=operator)
+    api_v1.include_router(mqtt_routes.router, dependencies=operator)
     # Operators read the registry; its write routes add the admin check themselves.
     api_v1.include_router(devices.router, dependencies=operator)
+    # Ingest is for devices, reads for operators: each route checks its own role.
+    api_v1.include_router(telemetry.router)
     admin = [Depends(auth.require_role("admin"))]
     api_v1.include_router(users_routes.router, dependencies=admin)
     api_v1.include_router(audit_routes.router, dependencies=admin)

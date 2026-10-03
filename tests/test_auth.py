@@ -36,7 +36,8 @@ def test_protected_endpoints_need_a_token(anon, path):
 
 @pytest.mark.parametrize("path", PUBLIC)
 def test_public_endpoints(anon, flat_project, path):
-    assert anon.get(path).status_code == 200
+    # /ready may be 503 here (no InfluxDB in tests); what matters is no 401/403.
+    assert anon.get(path).status_code in (200, 503)
 
 
 def test_auth_checked_before_project_lookup(anon, tmp_path, monkeypatch):

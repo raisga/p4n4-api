@@ -89,7 +89,7 @@ def _service(svc: dict, started: dict[str, datetime], now: datetime) -> Service:
     )
 
 
-def _stack_status(name: str, path: Path) -> Stack:
+def stack_status(name: str, path: Path) -> Stack:
     raw = compose.ps(path)
     started = docker.started_at(
         [s["ID"] for s in raw if s.get("ID") and s.get("State") == "running"]
@@ -121,9 +121,9 @@ def find_stack(project: tuple[Path, dict], stack: str) -> Path:
 
 @router.get("")
 def stacks(project: Project, _: docker.DockerDaemon) -> Stacks:
-    return Stacks(stacks=[_stack_status(name, path) for name, path in stack_dirs(project)])
+    return Stacks(stacks=[stack_status(name, path) for name, path in stack_dirs(project)])
 
 
 @router.get("/{stack}")
 def stack(stack: str, project: Project, _: docker.DockerDaemon) -> Stack:
-    return _stack_status(stack, find_stack(project, stack))
+    return stack_status(stack, find_stack(project, stack))

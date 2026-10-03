@@ -9,6 +9,8 @@ from typing import Annotated
 from fastapi import Depends, HTTPException
 from p4n4_lib import compose
 
+from p4n4_api.config import load_settings
+
 _TIMEOUT_S = 5
 
 
@@ -18,6 +20,8 @@ def daemon_error() -> str | None:
     `p4n4_lib.compose.ps` ignores Compose's exit code, so with the daemon down every
     stack would look empty rather than failing. Check the daemon explicitly first.
     """
+    if not load_settings().docker_enabled:
+        return "Docker access is disabled (P4N4_API_DOCKER=off)."
     try:
         result = subprocess.run(
             ["docker", "version", "--format", "{{.Server.Version}}"],
