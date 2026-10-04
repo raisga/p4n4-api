@@ -22,7 +22,7 @@ classifiers = [
   "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
 ]
 dependencies = [
-  "p4n4-lib>=0.1.0",
+  "p4n4-lib>=0.2.0",
   "fastapi>=0.110",
   "uvicorn[standard]>=0.31.1",
   "psutil>=5.9",

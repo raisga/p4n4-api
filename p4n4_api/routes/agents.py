@@ -1,4 +1,6 @@
-"""AI agents (operator+): Ollama models for chat and generation, Letta agents with memory.
+"""AI agents: Ollama models for chat and generation, Letta agents with memory.
+
+Normies can list models and agents and chat; one-shot generation is for operators.
 
 Going through the API puts sign-in in front of both and keeps the Letta password on the
 server. Ollama replies stream as Ollama's own NDJSON chunks, so a client that parses
@@ -9,16 +11,17 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from p4n4_api import ai
+from p4n4_api import ai, auth
 from p4n4_api.context import system_status
 from p4n4_api.deps import OptionalProject
 from p4n4_api.errors import ApiError
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+operator_only = [Depends(auth.require_role("operator"))]
 
 # Ollama model names: `llama3.2`, `qwen2.5:0.5b`, `hf.co/org/model:Q4_K_M`
 ModelName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")]
@@ -193,7 +196,11 @@ async def chat(body: ChatRequest, project: OptionalProject) -> StreamingResponse
 
 
 @router.post(
-    "/generate", response_class=StreamingResponse, response_model=None, responses=_STREAM_RESPONSES
+    "/generate",
+    response_class=StreamingResponse,
+    response_model=None,
+    responses=_STREAM_RESPONSES,
+    dependencies=operator_only,
 )
 async def generate(
     body: GenerateRequest, project: OptionalProject

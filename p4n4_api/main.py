@@ -40,9 +40,18 @@ log = logging.getLogger("p4n4_api")
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
     with db.connect() as conn:  # creates and migrates the database before serving
+        created = users.seed_dev_users(conn) if settings.dev_users else []
         user_count = users.count(conn)
     auth.jwt_secret()
     users.warm_up()
+    if settings.dev_users:
+        log.warning(
+            "P4N4_API_DEV_USERS=true: %s (password %r) can sign in. Development only.",
+            ", ".join(f"{name} ({role})" for name, role in users.DEV_USERS),
+            users.DEV_PASSWORD,
+        )
+        if created:
+            log.info("Created dev users: %s", ", ".join(created))
     if not settings.auth_enabled:
         log.warning("P4N4_API_AUTH=off: every request is treated as an admin. Development only.")
     elif user_count == 0:
@@ -110,19 +119,21 @@ def create_app() -> FastAPI:
     api_v1 = APIRouter(prefix="/api/v1")
     api_v1.include_router(health.version_router)
     api_v1.include_router(auth_routes.router)
+    # Normies read status and chat; routes that act check for operator themselves.
+    normie = [Depends(auth.require_role("normie"))]
     operator = [Depends(auth.require_role("operator"))]
-    api_v1.include_router(project.router, dependencies=operator)
-    api_v1.include_router(stacks.router, dependencies=operator)
-    # Control and logs are admin-only per route; job progress is readable by operators.
-    api_v1.include_router(control.router, dependencies=operator)
-    api_v1.include_router(jobs_routes.router, dependencies=operator)
-    api_v1.include_router(edge.router, dependencies=operator)
-    api_v1.include_router(inference.router, dependencies=operator)
-    api_v1.include_router(agents.router, dependencies=operator)
+    api_v1.include_router(project.router, dependencies=normie)
+    api_v1.include_router(stacks.router, dependencies=normie)
+    # Control and logs are admin-only per route; job progress is readable by everyone.
+    api_v1.include_router(control.router, dependencies=normie)
+    api_v1.include_router(jobs_routes.router, dependencies=normie)
+    api_v1.include_router(edge.router, dependencies=normie)
+    api_v1.include_router(inference.router, dependencies=normie)
+    api_v1.include_router(agents.router, dependencies=normie)
     api_v1.include_router(mqtt_routes.router, dependencies=operator)
     # Operators read the registry; its write routes add the admin check themselves.
     api_v1.include_router(devices.router, dependencies=operator)
-    # Ingest is for devices, reads for operators: each route checks its own role.
+    # Ingest is for devices, reads for normies and up: each route checks its own role.
     api_v1.include_router(telemetry.router)
     admin = [Depends(auth.require_role("admin"))]
     api_v1.include_router(users_routes.router, dependencies=admin)

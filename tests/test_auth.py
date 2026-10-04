@@ -67,6 +67,61 @@ def test_require_role_ranks_roles(anon):
     assert c.get("/admin-only", headers=_bearer(root["access_token"])).status_code == 200
 
 
+@pytest.mark.parametrize("path", PROTECTED)
+def test_normie_reads_status(normie, flat_project, path):
+    assert normie.get(path).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/api/v1/devices"),
+        ("post", "/api/v1/mqtt/publish"),
+        ("post", "/api/v1/stacks/iot/up"),
+        ("get", "/api/v1/users"),
+        ("get", "/api/v1/audit"),
+    ],
+)
+def test_normie_cannot_act(normie, flat_project, method, path):
+    assert getattr(normie, method)(path).status_code == 403
+
+
+def test_roles_are_ranked_normie_operator_admin():
+    normie, ops = users.User("j", "normie"), users.User("o", "operator")
+    root = users.User("r", "admin")
+    assert normie.has_role("normie") and not normie.has_role("operator")
+    assert ops.has_role("normie") and ops.has_role("operator") and not ops.has_role("admin")
+    assert root.has_role("normie") and root.has_role("admin")
+    assert not users.User("d", users.DEVICE_ROLE).has_role("normie")
+
+
+def test_migration_adds_normie_and_keeps_sessions(api_state, anon):
+    """A database from before the normie role: users and their refresh tokens survive."""
+    import sqlite3
+
+    with sqlite3.connect(api_state / db.DB_FILE) as old:
+        for version, script in enumerate(db.MIGRATIONS[:3], start=1):
+            old.executescript(f"BEGIN; {script}; PRAGMA user_version = {version}; COMMIT;")
+        old.execute(
+            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+            ("alice", users.hasher.hash(PASSWORD), "operator", "2026-01-01T00:00:00+00:00"),
+        )
+        old.execute(
+            "INSERT INTO refresh_tokens (jti, username, family, expires_at) VALUES (?, ?, ?, ?)",
+            ("jti-1", "alice", "fam-1", 2**31),
+        )
+    with db.connect() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.MIGRATIONS)
+        assert users.get(conn, "alice") == users.User("alice", "operator")
+        assert conn.execute("SELECT COUNT(*) FROM refresh_tokens").fetchone()[0] == 1
+        users.create(conn, "joe", PASSWORD, "normie")
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        # Foreign keys are back on after migrating: deleting a user still cascades.
+        users.delete(conn, "alice")
+        assert conn.execute("SELECT COUNT(*) FROM refresh_tokens").fetchone()[0] == 0
+    assert login(anon, "joe")["role"] == "normie"
+
+
 # ── Sign-in ───────────────────────────────────────────────────────────────────
 
 
@@ -490,3 +545,47 @@ def test_cli_bootstrap_custom_and_invalid_name(capsys):
     assert "Username" in capsys.readouterr().err
     assert cli(["users", "bootstrap", "Root"]) == 0
     assert "Created admin 'root'" in capsys.readouterr().out
+
+
+# ── Dev users ─────────────────────────────────────────────────────────────────
+
+
+def test_dev_users_one_per_view_and_left_alone_once_created(anon):
+    with db.connect() as conn:
+        assert users.seed_dev_users(conn) == ["admin", "power", "normie"]
+        users.set_role(conn, "power", "normie")
+        assert users.seed_dev_users(conn) == []
+        assert users.get(conn, "power").role == "normie", "an existing account keeps its role"
+    roles = {name: login(anon, name, users.DEV_PASSWORD)["role"] for name, _ in users.DEV_USERS}
+    assert roles == {"admin": "admin", "power": "normie", "normie": "normie"}
+
+
+def test_dev_users_created_on_startup_only_when_asked(monkeypatch, anon):
+    from p4n4_api.main import app
+
+    with TestClient(app):
+        pass
+    with db.connect() as conn:
+        assert users.count(conn) == 0
+
+    monkeypatch.setenv("P4N4_API_DEV_USERS", "true")
+    with TestClient(app):
+        pass
+    assert login(anon, "normie", users.DEV_PASSWORD)["role"] == "normie"
+
+
+def test_cli_dev_users(capsys, anon):
+    assert cli(["users", "dev"]) == 0
+    assert cli(["users", "dev"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("created") == 3 and out.count("exists, unchanged") == 3
+    assert login(anon, "admin", users.DEV_PASSWORD)["role"] == "admin"
+
+
+def test_dev_users_keep_a_bootstrapped_admin(anon):
+    with db.connect() as conn:
+        password = users.bootstrap_admin(conn)
+        assert users.seed_dev_users(conn) == ["power", "normie"]
+    login(anon, "admin", password)
+    r = anon.post("/api/v1/auth/token", json={"username": "admin", "password": users.DEV_PASSWORD})
+    assert r.status_code == 401

@@ -5,14 +5,15 @@ from __future__ import annotations
 import math
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
-from p4n4_api import edge_runner, influx
+from p4n4_api import auth, edge_runner, influx
 from p4n4_api.deps import OptionalProject
 from p4n4_api.errors import ApiError
 
 router = APIRouter(prefix="/inference", tags=["inference"])
+operator_only = [Depends(auth.require_role("operator"))]
 
 Backend = Literal["edge-impulse", "onnx", "mock"]
 _MODES = {backend: mode for mode, backend in edge_runner.BACKENDS.items()}
@@ -110,7 +111,7 @@ async def runner_info() -> RunnerInfo:
     )
 
 
-@router.post("")
+@router.post("", dependencies=operator_only)
 async def infer(body: InferenceRequest) -> InferenceResult:
     """Classify one feature vector with the runner's model (Edge Impulse or ONNX; simulated
     in mock mode). The result is returned only: not published to MQTT or stored."""

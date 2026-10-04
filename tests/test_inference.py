@@ -220,6 +220,12 @@ def test_inference_needs_operator(anon, admin, runner):
     assert admin.post("/api/v1/inference", json={"values": [1]}).status_code == 200
 
 
+def test_normie_reads_runner_but_cannot_infer(normie, runner):
+    runner.handler = fake_runner(MOCK_INFO)
+    assert normie.get("/api/v1/inference/runner").status_code == 200
+    assert normie.post("/api/v1/inference", json={"values": [1]}).status_code == 403
+
+
 # ── Stored results ────────────────────────────────────────────────────────────
 
 RESULTS_CSV = (

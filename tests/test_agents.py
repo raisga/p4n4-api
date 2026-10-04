@@ -396,6 +396,15 @@ def test_agents_need_operator(anon, admin, ai_stack):
     )
 
 
+def test_normie_chats_but_cannot_generate(normie, ai_stack, multi_project):
+    ai_stack.handler = fake_ai()
+    assert normie.get("/api/v1/agents").status_code == 200
+    assert _chat(normie, stream=False).status_code == 200
+    assert normie.post("/api/v1/agents/agent-1/chat", json={"message": "Hi"}).status_code == 200
+    r = normie.post("/api/v1/agents/generate", json={"model": "m", "prompt": "hi", "stream": False})
+    assert r.status_code == 403
+
+
 def test_ready_reports_ai_services(client, ai_stack, multi_project, influxdb):
     influxdb.handler = lambda request: httpx.Response(200)
 

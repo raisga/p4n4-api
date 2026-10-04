@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default_factory=_default_data_dir)
     # False only when P4N4_API_AUTH=off (or false/0/no): every request is treated as an admin
     auth_enabled: bool = Field(True, validation_alias=AliasChoices("P4N4_API_AUTH"))
+    # Development only: create admin, power and normie (one per dashboard view,
+    # password "p4n4") on startup if they don't exist
+    dev_users: bool = False
     # HS256 signing key; None means generate one and keep it in data_dir
     jwt_secret: str | None = None
     # Reverse proxies (IPs or CIDR networks) whose X-Forwarded-For is believed; empty trusts none

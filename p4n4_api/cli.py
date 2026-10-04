@@ -37,6 +37,13 @@ def _users(args: argparse.Namespace) -> int:
                 print(f"Created admin '{name}' with password: {password}")
                 print("It won't be shown again. Change it with: POST /api/v1/auth/password")
             return 0
+        if args.action == "dev":
+            created = users.seed_dev_users(conn)
+            for name, role in users.DEV_USERS:
+                state = "created" if name in created else "exists, unchanged"
+                print(f"{name:<12} {role:<9} {state}")
+            print(f"Password for new ones: {users.DEV_PASSWORD}  (development only)")
+            return 0
         name = users.normalize_username(args.username)
         if args.action == "add":
             user = users.create(conn, name, _read_password(args), args.role)
@@ -61,7 +68,7 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("serve", help="Run the API server (the default)")
 
-    users_parser = sub.add_parser("users", help="Manage operator and admin accounts")
+    users_parser = sub.add_parser("users", help="Manage normie, operator and admin accounts")
     actions = users_parser.add_subparsers(dest="action", required=True)
     actions.add_parser("list", help="List users")
     bootstrap = actions.add_parser(
@@ -69,6 +76,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Create the first admin with a generated password, if there are no users yet",
     )
     bootstrap.add_argument("username", nargs="?", default="admin")
+    actions.add_parser(
+        "dev",
+        help="Create admin, power and normie (one per dashboard view) with a "
+        "well-known password, if missing. Development only",
+    )
     for action, help_text in (("add", "Create a user"), ("passwd", "Change a password")):
         p = actions.add_parser(action, help=help_text)
         p.add_argument("username")

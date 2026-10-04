@@ -60,6 +60,20 @@ MIGRATIONS = (
         request_id TEXT NOT NULL DEFAULT '-'
     );
     """,
+    # Adds the normie role. SQLite can't change a CHECK constraint, so the table is rebuilt
+    # (foreign keys are off while migrating, so refresh tokens survive the drop).
+    """
+    CREATE TABLE users_new (
+        username      TEXT PRIMARY KEY,
+        password_hash TEXT NOT NULL,
+        role          TEXT NOT NULL CHECK (role IN ('normie', 'operator', 'admin')),
+        token_gen     INTEGER NOT NULL DEFAULT 0,
+        created_at    TEXT NOT NULL
+    );
+    INSERT INTO users_new SELECT username, password_hash, role, token_gen, created_at FROM users;
+    DROP TABLE users;
+    ALTER TABLE users_new RENAME TO users;
+    """,
 )
 
 
@@ -81,8 +95,10 @@ def connect() -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(path, timeout=10)
     try:
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
+        # Migrations run first, with foreign keys off: a table rebuild drops the old table,
+        # which would otherwise cascade into the rows that reference it.
         _migrate(conn)
+        conn.execute("PRAGMA foreign_keys = ON")
         with conn:
             yield conn
     finally:

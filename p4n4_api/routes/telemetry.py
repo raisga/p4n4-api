@@ -19,7 +19,7 @@ from p4n4_api.deps import OptionalProject
 from p4n4_api.mqtt import RESERVED_KEYS, bridge
 
 router = APIRouter(prefix="/telemetry", tags=["telemetry"])
-operator_only = [Depends(auth.require_role("operator"))]
+readers = [Depends(auth.require_role("normie"))]
 
 HEARTBEAT_S = 15
 LAST_SEEN_EVERY = timedelta(minutes=1)
@@ -122,7 +122,7 @@ async def ingest(body: Batch, device: CurrentUser, project: OptionalProject) -> 
     return IngestResult(stored=len(lines), published=published)
 
 
-@router.get("", dependencies=operator_only)
+@router.get("", dependencies=readers)
 async def query(
     project: OptionalProject,
     device: str | None = None,
@@ -193,7 +193,7 @@ async def stream_events(device: str | None, sensor: str | None) -> AsyncIterator
 
 @router.get(
     "/stream",
-    dependencies=operator_only,
+    dependencies=readers,
     response_class=StreamingResponse,
     responses={200: {"content": {"text/event-stream": {}}, "description": "Live readings"}},
 )

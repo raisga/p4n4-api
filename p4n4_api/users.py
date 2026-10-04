@@ -1,4 +1,4 @@
-"""Operator and admin accounts: people who sign in to the dashboard or the API."""
+"""Normie, operator and admin accounts: people who sign in to the dashboard or the API."""
 
 from __future__ import annotations
 
@@ -13,11 +13,18 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 
 # People's roles, lowest first. Devices have the role "device", outside this ranking: they
-# can't do what operators can, and only devices pass require_role("device").
-ROLES = ("operator", "admin")
+# can't do what normies can, and only devices pass require_role("device").
+# Normies read status and chat with agents; operators also act (publish, infer, generate).
+ROLES = ("normie", "operator", "admin")
 DEVICE_ROLE = "device"
 MIN_PASSWORD_LENGTH = 10
 _USERNAME = re.compile(r"[a-z0-9][a-z0-9_.-]{1,31}")
+
+# Development accounts, one per dashboard view, all with the same well-known password. Only
+# created on request (P4N4_API_DEV_USERS=true or `p4n4-api users dev`): never in production.
+# The password is deliberately shorter than MIN_PASSWORD_LENGTH; seeding skips that check.
+DEV_PASSWORD = "p4n4"
+DEV_USERS = (("admin", "admin"), ("power", "operator"), ("normie", "normie"))
 
 # argon2id with the library's defaults (RFC 9106 low-memory profile: 64 MiB, 3 passes).
 hasher = PasswordHasher()
@@ -30,7 +37,7 @@ class User:
     token_gen: int = 0
 
     def has_role(self, role: str) -> bool:
-        """Roles are ranked: an admin can do everything an operator can."""
+        """Roles are ranked: an admin can do everything an operator can, and so on down."""
         if DEVICE_ROLE in (role, self.role):
             return role == self.role
         return self.role in ROLES and ROLES.index(self.role) >= ROLES.index(role)
@@ -137,6 +144,24 @@ def bootstrap_admin(conn: sqlite3.Connection, username: str = "admin") -> str | 
         (name, hasher.hash(password), datetime.now(UTC).isoformat(timespec="seconds")),
     ).rowcount
     return password if created else None
+
+
+def seed_dev_users(conn: sqlite3.Connection) -> list[str]:
+    """Create the missing DEV_USERS with DEV_PASSWORD; returns the names created.
+
+    Existing accounts are left alone (their role and password may have been changed on
+    purpose), so it's safe on every start.
+    """
+    created = []
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    for name, role in DEV_USERS:
+        if conn.execute(
+            "INSERT OR IGNORE INTO users (username, password_hash, role, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (name, hasher.hash(DEV_PASSWORD), role, now),
+        ).rowcount:
+            created.append(name)
+    return created
 
 
 def delete(conn: sqlite3.Connection, username: str, *, keep_admin: bool = False) -> bool:

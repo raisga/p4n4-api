@@ -12,8 +12,8 @@ Part of the [p4n4](https://github.com/raisga/p4n4) platform — an EdgeAI + GenA
 
 **v0.1** implements user sign-in (JWT) and a read-only project/stack/edge-metrics surface
 built on [`p4n4-lib`](https://github.com/raisga/p4n4-lib) (manifest, layout, validation, and
-Compose status — both flat and multi-layer project layouts). Endpoints marked 🔒 need an
-`operator` or `admin` access token; 🔑 needs `admin`:
+Compose status — both flat and multi-layer project layouts). Endpoints marked 🔒 need a
+`normie`, `operator` or `admin` access token; 🔑 needs `admin`:
 
 | Method | Path | Description |
 |---|---|---|
@@ -117,7 +117,7 @@ implemented. See [TODO.md](TODO.md) for the plan.
 
 ## Features
 
-- **Unified auth** — API key → JWT (HS256). Three roles: `device`, `operator`, `admin`.
+- **Unified auth** — API key → JWT (HS256). Four roles: `device`, `normie`, `operator`, `admin`.
 - **Device registry** — CRUD for devices; API keys hashed with argon2id; stored in SQLite.
 - **Telemetry ingest** — batch JSON → InfluxDB line protocol + MQTT publish.
 - **Telemetry query** — Flux proxy against InfluxDB with simple query-param interface.
@@ -151,7 +151,8 @@ For local development only:
    git clone https://github.com/raisga/p4n4-api.git
    cd p4n4-api
    uv venv
-   uv pip install "p4n4-lib @ git+https://github.com/raisga/p4n4-lib.git" -e .
+   uv pip install -e .                        # p4n4-lib from PyPI
+   # lib main: uv pip install "p4n4-lib @ git+https://github.com/raisga/p4n4-lib.git" -e .
    # monorepo: uv pip install -e ../../core/lib -e .
    ```
 
@@ -198,7 +199,8 @@ For local development only:
 ```bash
 p4n4-api users list
 p4n4-api users bootstrap                 # first admin with a generated password; no-op once users exist
-p4n4-api users add alice                 # operator by default; --role admin
+p4n4-api users dev                       # admin, power, normie (see Dev users)
+p4n4-api users add alice                 # operator by default; --role normie|admin
 p4n4-api users passwd alice              # also signs alice out everywhere
 p4n4-api users role alice admin
 p4n4-api users remove alice
@@ -209,11 +211,30 @@ Admins can do the same over HTTP (`/api/v1/users`), e.g. from the dashboard, and
 in can change their own password (`POST /api/v1/auth/password`). The API won't demote or remove
 the last admin; the CLI will, so it stays the way back in.
 
-`operator` can read project, stack and edge status, the device registry and job progress;
-`admin` can also manage users and devices, start/stop/restart stacks, read container logs
+`normie` can read project, stack and edge status, telemetry, inference results and job
+progress, and chat with Ollama models and Letta agents (the dashboard's simplified view);
+`operator` can also read the device registry, publish MQTT messages, run inference and
+one-shot generation; `admin` can also manage users and devices, start/stop/restart stacks, read container logs
 and read the audit log. A user's role is read on every
 request, so role changes and removals apply immediately. Changing or resetting a password
 signs that user out everywhere.
+
+#### Dev users
+
+For development, one account per dashboard view, all with the password `p4n4`:
+
+| Username | Role | Dashboard view |
+|---|---|---|
+| `admin` | `admin` | admin |
+| `power` | `operator` | power |
+| `normie` | `normie` | normie |
+
+Create them on every start with `P4N4_API_DEV_USERS=true`, or once with `p4n4-api users dev`.
+Either way only missing accounts are created; ones that exist keep their role and password
+(so an `admin` from `users bootstrap` keeps its generated password). The password is public
+and shorter than real ones may be, so **never** set this on a deployment others can reach.
+To clean up, remove `power` and `normie` (and `admin`, once another admin exists) with
+`p4n4-api users remove`, and unset the variable.
 
 ---
 
@@ -260,8 +281,8 @@ docker compose exec api p4n4-api users bootstrap    # first admin; password show
   rate limit is per client behind the dashboard's nginx.
 
 Build it yourself with `docker build -t ghcr.io/raisga/p4n4-api:dev .` and
-`P4N4_API_VERSION=dev`. `--build-arg P4N4_LIB=...` picks another `p4n4-lib` (any pip
-requirement, e.g. a git tag).
+`P4N4_API_VERSION=dev`. The image installs `p4n4-lib` from PyPI; `--build-arg P4N4_LIB=...`
+picks another one (any pip requirement, e.g. a git tag).
 
 ---
 
@@ -295,6 +316,7 @@ All configuration is read from environment variables (via `pydantic-settings`; e
 | `P4N4_API_DOCKER` | `off` when the API has no Docker access (a container without the socket): stack status, control and logs return `503`, and `/ready` doesn't require Docker. Default `on` |
 | `P4N4_API_DISK_PATH` | Filesystem `/edge/metrics` reports as `disk_percent` (default `/`) |
 | `P4N4_API_AUTH` | `off` disables auth: every request is treated as an admin. **Development only**; logs a warning at startup |
+| `P4N4_API_DEV_USERS` | `true` creates `admin`, `power` and `normie` (password `p4n4`) at startup if missing; see [Dev users](#dev-users). **Development only**; logs a warning at startup |
 
 Planned (for the upstream-proxy features below): `INFLUXDB_URL`,
 `INFLUXDB_TOKEN`, `MQTT_HOST`, `MQTT_USER`/`MQTT_PASSWORD`, `OLLAMA_URL`, `LETTA_URL`,
@@ -351,7 +373,7 @@ Every response, errors included, carries an `X-Request-ID` header: the caller's 
 
 Demoting or removing the last admin returns `409`.
 
-### Stack health (operator+)
+### Stack health (normie+)
 
 | Method | Path | Description |
 |---|---|---|
@@ -378,7 +400,7 @@ the waiting job. A job is stopped after 30 minutes. Jobs are kept in memory (the
 100, each with the last 500 lines of output), so restarting the API forgets them; the audit
 log keeps who ran what. Logs are admin-only because they can contain secrets.
 
-### Jobs (operator+)
+### Jobs (normie+)
 
 | Method | Path | Description |
 |---|---|---|
@@ -418,8 +440,8 @@ current key and tokens valid again. For a lost or leaked key, rotate it or delet
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `POST` | `/api/v1/telemetry` | device | Store a batch of readings, then publish each to MQTT |
-| `GET` | `/api/v1/telemetry` | operator | Stored readings |
-| `GET` | `/api/v1/telemetry/stream` | operator | Live readings (server-sent events) |
+| `GET` | `/api/v1/telemetry` | normie+ | Stored readings |
+| `GET` | `/api/v1/telemetry/stream` | normie+ | Live readings (server-sent events) |
 
 **Ingest.** A device sends readings for itself (the device comes from its token):
 
@@ -465,12 +487,12 @@ found, e.g. on macOS, Windows or in a VM. `inference_ms` is the edge runner's la
 inference latency (Edge Impulse or ONNX), when the project has the edge layer and the runner
 answers within 0.5 s.
 
-### Inference (operator+)
+### Inference (normie+ reads, operator+ runs)
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/v1/inference/runner` | Active `backend` (`edge-impulse`, `onnx` or `mock`), `model_file`, `model` (what the backend reports), `labels`, `expected_features`, and pipeline counters (`inference_count`, `last_inference_at`, `last_latency_ms`, `mqtt_connected`, `influxdb_ok`) |
-| `POST` | `/api/v1/inference` | `{values: [numbers], device?}` → `{label, confidence, anomaly_score, latency_ms, backend, mode, device, timestamp}`. Returned only: not published or stored |
+| `POST` | `/api/v1/inference` | Operator+. `{values: [numbers], device?}` → `{label, confidence, anomaly_score, latency_ms, backend, mode, device, timestamp}`. Returned only: not published or stored |
 | `GET` | `/api/v1/inference/results` | Stored results, newest first: `?device=&label=&backend=&start=&stop=&limit=` |
 
 The edge stack runs one inference runner whose `MODEL_BACKEND` picks the model: an Edge
@@ -484,13 +506,13 @@ result from a real backend (runners before p4n4-edge's fix fall back to mock on 
 runner_unavailable`. Results come from the runner's own pipeline (`sensors/<device>/raw` →
 `inference_result` in `ai_events`).
 
-### AI agents (operator+)
+### AI agents (normie+; generation operator+)
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/v1/agents/models` | Ollama models: `name`, `size`, `modified_at`, `family`, `parameter_size`, `quantization` |
 | `POST` | `/api/v1/agents/chat` | `{model, messages: [{role, content}], stream?, include_status?, options?}`: chat with an Ollama model |
-| `POST` | `/api/v1/agents/generate` | `{model, prompt, system?, stream?, include_status?, options?}`: one-shot generation |
+| `POST` | `/api/v1/agents/generate` | Operator+. `{model, prompt, system?, stream?, include_status?, options?}`: one-shot generation |
 | `GET` | `/api/v1/agents` | Letta agents: `id`, `name`, `description`, `model` |
 | `POST` | `/api/v1/agents/{id}/chat` | `{message, include_status?}` → `{reply, messages: [{type, text}]}` |
 
@@ -636,7 +658,7 @@ dashboard uses `http://p4n4-api:8000`. `p4n4 up --api` in the CLI is planned.
 
 ## Security
 
-- **JWT** — HS256 signed tokens. Access tokens expire in 1 hour; refresh tokens in 7 days. Roles are `operator` and `admin` for people (ranked), and `device` (separate: devices can only do device things). The role is read from the database on every request, not trusted from the token; device tokens are re-checked too, so rotating a key, disabling or deleting a device ends its tokens at once.
+- **JWT** — HS256 signed tokens. Access tokens expire in 1 hour; refresh tokens in 7 days. Roles are `normie`, `operator` and `admin` for people (ranked), and `device` (separate: devices can only do device things). The role is read from the database on every request, not trusted from the token; device tokens are re-checked too, so rotating a key, disabling or deleting a device ends its tokens at once.
 - **Refresh rotation** — each refresh token works once. Reusing one revokes every token from that sign-in. Password changes sign the user out everywhere. Signing out revokes that sign-in's refresh **and** access tokens at once (access tokens carry their sign-in's ID, `sid`, checked on every request); other sign-ins are untouched.
 - **Passwords** — argon2id, at least 10 characters. Unknown usernames take as long to reject as wrong passwords.
 - **API keys** — 256-bit random secrets, stored as argon2id hashes; plaintext shown only once, at registration and at rotation. Unknown keys take as long to reject as wrong ones. Key exchange shares the sign-in rate limit.

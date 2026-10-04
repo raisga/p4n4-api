@@ -54,10 +54,19 @@ def anon() -> TestClient:
 
 @pytest.fixture()
 def client() -> TestClient:
-    """A client signed in as an operator, the role every read endpoint needs."""
+    """A client signed in as an operator, the role every non-admin action needs."""
     c = TestClient(app)
     make_user("ops", "operator")
     c.headers["Authorization"] = f"Bearer {login(c, 'ops')['access_token']}"
+    return c
+
+
+@pytest.fixture()
+def normie() -> TestClient:
+    """A client signed in as a normie: reads status and chats, nothing more."""
+    c = TestClient(app)
+    make_user("joe", "normie")
+    c.headers["Authorization"] = f"Bearer {login(c, 'joe')['access_token']}"
     return c
 
 

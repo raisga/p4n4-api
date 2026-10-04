@@ -14,7 +14,7 @@ from p4n4_api.errors import ApiError
 
 router = APIRouter(prefix="/users", tags=["users"])
 
-Role = Literal["operator", "admin"]
+Role = Literal["normie", "operator", "admin"]
 
 
 class UserOut(BaseModel):

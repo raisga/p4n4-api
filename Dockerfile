@@ -3,21 +3,21 @@
 # socket is mounted (docker-compose.docker.yml). See README "Running in Docker".
 #
 #   docker build -t p4n4-api .
-#   docker build --build-arg P4N4_LIB="p4n4-lib @ git+https://github.com/raisga/p4n4-lib.git@v0.2.0" -t p4n4-api .
+#   docker build --build-arg P4N4_LIB="p4n4-lib @ git+https://github.com/raisga/p4n4-lib.git" -t p4n4-api .   # lib main
 
 # Base images are pinned by digest (multi-arch indexes); Dependabot bumps them.
 # Static docker and docker-compose binaries, copied into the runtime image.
 FROM docker:29-cli@sha256:b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c AS docker-cli
 
 FROM python:3.12-slim-bookworm@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3 AS build
-# git only for the p4n4-lib install, which isn't on PyPI yet
+# git only for installing p4n4-lib from a git ref (--build-arg P4N4_LIB=...)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git \
  && rm -rf /var/lib/apt/lists/*
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-ARG P4N4_LIB="p4n4-lib @ git+https://github.com/raisga/p4n4-lib.git"
+ARG P4N4_LIB="p4n4-lib>=0.2.0,<0.3"
 RUN pip install "$P4N4_LIB"
 WORKDIR /src
 COPY pyproject.toml README.md LICENSE ./
