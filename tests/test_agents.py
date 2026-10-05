@@ -399,10 +399,124 @@ def test_agents_need_operator(anon, admin, ai_stack):
 def test_normie_chats_but_cannot_generate(normie, ai_stack, multi_project):
     ai_stack.handler = fake_ai()
     assert normie.get("/api/v1/agents").status_code == 200
+    # No assistant chosen yet: the first model Ollama lists
     assert _chat(normie, stream=False).status_code == 200
-    assert normie.post("/api/v1/agents/agent-1/chat", json={"message": "Hi"}).status_code == 200
     r = normie.post("/api/v1/agents/generate", json={"model": "m", "prompt": "hi", "stream": False})
     assert r.status_code == 403
+
+
+# ── The assistant: chosen by operators, the only one normies chat with ───────
+
+
+def _set_assistant(c, **config):
+    return c.put("/api/v1/agents/config", json=config)
+
+
+def _chats_sent(ai_stack) -> int:
+    return sum(
+        1
+        for r in ai_stack.requests
+        if r.url.path in ("/api/chat", "/v1/agents/agent-1/messages", "/v1/agents/agent-2/messages")
+    )
+
+
+def test_assistant_config_defaults(normie):
+    r = normie.get("/api/v1/agents/config")
+    assert r.status_code == 200
+    # Never chosen: no when or who, so the dashboard may offer its brand's default
+    assert r.json() == {
+        "backend": "ollama",
+        "model": None,
+        "agent_id": None,
+        "updated_at": None,
+        "updated_by": None,
+    }
+
+
+def test_only_operators_choose_the_assistant(normie, client, admin):
+    assert _set_assistant(normie, backend="ollama", model="big:70b").status_code == 403
+    assert normie.get("/api/v1/agents/config").json()["model"] is None
+    r = _set_assistant(client, backend="ollama", model="big:70b")
+    assert r.status_code == 200
+    body = r.json()
+    assert {k: body[k] for k in ("backend", "model", "agent_id", "updated_by")} == {
+        "backend": "ollama",
+        "model": "big:70b",
+        "agent_id": None,
+        "updated_by": "ops",
+    }
+    assert body["updated_at"]
+    assert normie.get("/api/v1/agents/config").json() == body
+    # Choosing "the first listed" is still a choice: it has a who and when
+    reset = _set_assistant(client, backend="ollama", model=None).json()
+    assert (reset["model"], reset["updated_by"]) == (None, "ops")
+    newest, chosen = admin.get("/api/v1/audit").json()["items"][:2]
+    assert (chosen["actor"], chosen["action"], chosen["target"], chosen["outcome"]) == (
+        "ops",
+        "assistant.update",
+        "ollama",
+        "big:70b",
+    )
+    assert newest["outcome"] == "first listed"
+
+
+@pytest.mark.parametrize(
+    "config",
+    [{"backend": "gpt"}, {"model": "../../etc"}, {"agent_id": "a/b"}],
+)
+def test_assistant_config_validation(client, config):
+    assert _set_assistant(client, **config).status_code == 422
+
+
+def test_normie_cannot_pick_another_model(normie, ai_stack):
+    ai_stack.handler = fake_ai()
+    r = _chat(normie, model="llama3.2:70b", stream=False)
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "assistant_restricted"
+    assert _chats_sent(ai_stack) == 0
+
+
+def test_normie_chats_with_the_chosen_model(normie, client, ai_stack):
+    ai_stack.handler = fake_ai()
+    _set_assistant(client, backend="ollama", model="llama3.2")
+    assert _chat(normie, stream=False).status_code == 403  # qwen: listed first, not chosen
+    assert _chat(normie, model="llama3.2", stream=False).status_code == 200
+    assert _sent(ai_stack, "/api/chat")["model"] == "llama3.2"
+
+
+def test_normie_cannot_change_options(normie, ai_stack):
+    ai_stack.handler = fake_ai()
+    r = _chat(normie, stream=False, options={"num_ctx": 32768})
+    assert r.status_code == 403
+    assert _chats_sent(ai_stack) == 0
+
+
+def test_operators_chat_with_any_model(client, ai_stack):
+    ai_stack.handler = fake_ai()
+    _set_assistant(client, backend="ollama", model="llama3.2")
+    r = _chat(client, model="other:1b", stream=False, options={"temperature": 0.2})
+    assert r.status_code == 200
+    assert _sent(ai_stack, "/api/chat")["options"] == {"temperature": 0.2}
+
+
+def test_normie_and_letta_assistant(normie, client, ai_stack):
+    ai_stack.handler = fake_ai()
+    # Ollama chosen: no Letta agents for normies
+    r = normie.post("/api/v1/agents/agent-1/chat", json={"message": "Hi"})
+    assert r.status_code == 403
+    _set_assistant(client, backend="letta", agent_id="agent-2")
+    assert normie.post("/api/v1/agents/agent-1/chat", json={"message": "Hi"}).status_code == 403
+    assert normie.post("/api/v1/agents/agent-2/chat", json={"message": "Hi"}).status_code == 200
+    # Letta chosen: no Ollama chat for normies
+    assert _chat(normie, stream=False).status_code == 403
+    assert client.post("/api/v1/agents/agent-1/chat", json={"message": "Hi"}).status_code == 200
+
+
+def test_normie_letta_defaults_to_first_agent(normie, client, ai_stack):
+    ai_stack.handler = fake_ai()
+    _set_assistant(client, backend="letta")
+    assert normie.post("/api/v1/agents/agent-1/chat", json={"message": "Hi"}).status_code == 200
+    assert normie.post("/api/v1/agents/agent-2/chat", json={"message": "Hi"}).status_code == 403
 
 
 def test_ready_reports_ai_services(client, ai_stack, multi_project, influxdb):

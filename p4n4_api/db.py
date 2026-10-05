@@ -1,4 +1,5 @@
-"""The API's own SQLite database: users, refresh tokens, devices and the audit log."""
+"""The API's own SQLite database: users, refresh tokens, devices, the audit log and
+deployment-wide settings."""
 
 from __future__ import annotations
 
@@ -73,6 +74,15 @@ MIGRATIONS = (
     INSERT INTO users_new SELECT username, password_hash, role, token_gen, created_at FROM users;
     DROP TABLE users;
     ALTER TABLE users_new RENAME TO users;
+    """,
+    """
+    -- Deployment-wide settings changed through the API (e.g. the assistant's model), as JSON
+    CREATE TABLE settings (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL
+    );
     """,
 )
 

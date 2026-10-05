@@ -187,9 +187,11 @@ def edge_project(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def docker_up(monkeypatch):
-    """Pretend the Docker daemon is reachable; tests override these to simulate failures."""
+    """Pretend the Docker daemon is reachable, with no containers; tests override these to
+    simulate failures or running services."""
     monkeypatch.setattr("p4n4_api.docker.daemon_error", lambda: None)
     monkeypatch.setattr("p4n4_api.docker.started_at", lambda ids: {})
+    monkeypatch.setattr("p4n4_lib.compose.ps", lambda cwd: [])
 
 
 @pytest.fixture()

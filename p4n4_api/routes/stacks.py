@@ -90,7 +90,12 @@ def _service(svc: dict, started: dict[str, datetime], now: datetime) -> Service:
 
 
 def stack_status(name: str, path: Path) -> Stack:
-    raw = compose.ps(path)
+    try:
+        raw = compose.ps(path)
+    except compose.DockerError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"Can't read the stack's status: {exc}"
+        ) from exc
     started = docker.started_at(
         [s["ID"] for s in raw if s.get("ID") and s.get("State") == "running"]
     )

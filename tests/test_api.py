@@ -143,6 +143,18 @@ def test_single_stack(client, multi_project, monkeypatch):
     assert body["services"][0]["name"] == "ollama"
 
 
+def test_stack_status_503_when_compose_fails(client, multi_project, monkeypatch):
+    from p4n4_lib import compose
+
+    def ps(cwd):
+        raise compose.DockerError("`docker compose ps` failed: invalid compose file")
+
+    monkeypatch.setattr("p4n4_api.routes.stacks.compose.ps", ps)
+    r = client.get("/api/v1/stacks/ai")
+    assert r.status_code == 503
+    assert "invalid compose file" in r.json()["error"]["message"]
+
+
 def test_unknown_stack_404(client, multi_project):
     r = client.get("/api/v1/stacks/nope")
     assert r.status_code == 404

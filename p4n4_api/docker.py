@@ -17,8 +17,8 @@ _TIMEOUT_S = 5
 def daemon_error() -> str | None:
     """Why Docker (daemon or Compose) can't be used, or None when it can.
 
-    `p4n4_lib.compose.ps` ignores Compose's exit code, so with the daemon down every
-    stack would look empty rather than failing. Check the daemon explicitly first.
+    Checked before stack endpoints run, so they answer 503 with the reason (`compose.ps`
+    also raises DockerError when Compose fails, which those endpoints map to 503).
     """
     if not load_settings().docker_enabled:
         return "Docker access is disabled (P4N4_API_DOCKER=off)."

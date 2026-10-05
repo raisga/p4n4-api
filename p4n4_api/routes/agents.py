@@ -1,6 +1,8 @@
 """AI agents: Ollama models for chat and generation, Letta agents with memory.
 
-Normies can list models and agents and chat; one-shot generation is for operators.
+Normies can list models and agents and chat, but only with the assistant an operator chose
+(GET/PUT /agents/config) and without changing generation options. One-shot generation and
+choosing the assistant are for operators.
 
 Going through the API puts sign-in in front of both and keeps the Letta password on the
 server. Ollama replies stream as Ollama's own NDJSON chunks, so a client that parses
@@ -15,7 +17,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from p4n4_api import ai, auth
+from p4n4_api import ai, assistant, audit, auth, db
+from p4n4_api.auth import CurrentUser
 from p4n4_api.context import system_status
 from p4n4_api.deps import OptionalProject
 from p4n4_api.errors import ApiError
@@ -30,6 +33,22 @@ AgentId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,100}$")]
 Text = Annotated[str, StringConstraints(min_length=1, max_length=100_000)]
 # Ollama generation options (temperature, num_ctx, ...), scalars only
 Options = Annotated[dict[str, float | int | str | bool], Field(max_length=30)]
+
+
+class AssistantConfig(BaseModel):
+    """Who everyone chats with: an Ollama model or a Letta agent. A null model or agent
+    means the first one the service lists."""
+
+    backend: Literal["ollama", "letta"] = "ollama"
+    model: ModelName | None = None
+    agent_id: AgentId | None = None
+
+
+class AssistantState(AssistantConfig):
+    # When and by whom it was last chosen; both null until someone chooses, which is how
+    # p4n4-dashboard knows to offer its brand's default (it does so once)
+    updated_at: str | None = None
+    updated_by: str | None = None
 
 
 class ChatMessage(BaseModel):
@@ -133,6 +152,53 @@ def _upstream(exc: ai.UpstreamError) -> HTTPException:
     return ApiError(502, "upstream_error", str(exc))
 
 
+def _config() -> assistant.Config:
+    with db.connect() as conn:
+        return assistant.load(conn)
+
+
+def _restricted(message: str) -> ApiError:
+    return ApiError(403, "assistant_restricted", message)
+
+
+async def _check_model(user, body: ChatRequest, project) -> None:
+    """Normies chat with the chosen model only, as it's set up."""
+    if user.has_role("operator"):
+        return
+    if body.options:
+        raise _restricted("Only operators can change generation options.")
+    config = _config()
+    if config.backend != "ollama":
+        raise _restricted("The assistant is a Letta agent: chat with it instead.")
+    model = config.model
+    if model is None:
+        try:
+            listed = await ai.ollama_models(ai.config(project))
+        except ai.UpstreamError as exc:
+            raise _upstream(exc) from exc
+        model = next((m.get("name") or m.get("model") for m in listed), None)
+    if body.model != model:
+        raise _restricted(f"Only operators can choose the model; the assistant uses {model!r}.")
+
+
+async def _check_agent(user, agent_id: str, project) -> None:
+    """Normies talk to the chosen agent only."""
+    if user.has_role("operator"):
+        return
+    config = _config()
+    if config.backend != "letta":
+        raise _restricted("The assistant is an Ollama model: chat with it instead.")
+    chosen = config.agent_id
+    if chosen is None:
+        try:
+            listed = await ai.letta_agents(ai.config(project))
+        except ai.UpstreamError as exc:
+            raise _upstream(exc) from exc
+        chosen = next((a["id"] for a in listed if isinstance(a, dict) and a.get("id")), None)
+    if agent_id != chosen:
+        raise _restricted("Only operators can choose the agent.")
+
+
 _STREAM_RESPONSES = {
     200: {
         "model": OllamaChunk,
@@ -157,6 +223,31 @@ async def _ollama(
         # X-Accel-Buffering: nginx (the dashboard's proxy) would otherwise hold chunks back
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _state(conn) -> AssistantState:
+    when, who = assistant.changed(conn) or (None, None)
+    return AssistantState(**assistant.load(conn).model_dump(), updated_at=when, updated_by=who)
+
+
+@router.get("/config")
+def get_config() -> AssistantState:
+    """The assistant everyone chats with, and who chose it when."""
+    with db.connect() as conn:
+        return _state(conn)
+
+
+@router.put("/config", dependencies=operator_only)
+def set_config(body: AssistantConfig, actor: CurrentUser) -> AssistantState:
+    """Choose the assistant: the backend, and the Ollama model or Letta agent (null for the
+    first one listed). Normies chat with this one only."""
+    with db.connect() as conn:
+        assistant.save(conn, assistant.Config(**body.model_dump()), actor.username)
+        chosen = body.model if body.backend == "ollama" else body.agent_id
+        audit.record(
+            actor.username, "assistant.update", body.backend, chosen or "first listed", conn
+        )
+        return _state(conn)
 
 
 @router.get("/models")
@@ -184,8 +275,12 @@ async def models(project: OptionalProject) -> Models:
 @router.post(
     "/chat", response_class=StreamingResponse, response_model=None, responses=_STREAM_RESPONSES
 )
-async def chat(body: ChatRequest, project: OptionalProject) -> StreamingResponse | JSONResponse:
-    """Chat with an Ollama model. Ollama keeps no state: send the whole conversation."""
+async def chat(
+    body: ChatRequest, project: OptionalProject, user: CurrentUser
+) -> StreamingResponse | JSONResponse:
+    """Chat with an Ollama model. Ollama keeps no state: send the whole conversation.
+    Normies may only use the assistant's model (GET /agents/config), without `options`."""
+    await _check_model(user, body, project)
     messages = [m.model_dump() for m in body.messages]
     if body.include_status:
         messages.insert(0, {"role": "system", "content": await system_status(project)})
@@ -240,9 +335,13 @@ async def agents(project: OptionalProject) -> Agents:
 
 
 @router.post("/{agent_id}/chat")
-async def agent_chat(agent_id: AgentId, body: AgentChat, project: OptionalProject) -> AgentReply:
+async def agent_chat(
+    agent_id: AgentId, body: AgentChat, project: OptionalProject, user: CurrentUser
+) -> AgentReply:
     """Send a message to a Letta agent. Letta keeps the conversation: send only the new
-    message. Not streamed; can take a while on a Pi."""
+    message. Not streamed; can take a while on a Pi. Normies may only message the
+    assistant's agent (GET /agents/config)."""
+    await _check_agent(user, agent_id, project)
     content = body.message
     if body.include_status:
         content = f"{await system_status(project)}\n\n{content}"

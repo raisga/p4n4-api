@@ -46,10 +46,15 @@ Compose status — both flat and multi-layer project layouts). Endpoints marked 
 | `GET` | `/api/v1/inference/runner` | 🔒 The edge runner's backend (Edge Impulse, ONNX or mock), model and counters |
 | `POST` | `/api/v1/inference` | 🔒 Classify a feature vector with the runner's model |
 | `GET` | `/api/v1/inference/results` | 🔒 Results the runner's pipeline stored (`ai_events`) |
+| `GET` | `/api/v1/dashboard/views` | 🔒 Tabs each p4n4-dashboard view shows and their order: `{tab_order, power_tabs, normie_tabs}` (null = the dashboard's default) |
+| `PUT` | `/api/v1/dashboard/views` | 🔑 Set them for every device (audited) |
+| `GET` | `/api/v1/agents/config` | 🔒 The assistant everyone chats with: `{backend, model, agent_id}` (null = the first one listed), and `updated_at`/`updated_by` (null until someone chooses; p4n4-dashboard then offers its brand's default) |
+| `PUT` | `/api/v1/agents/config` | 🔒 `operator` or `admin`: choose the assistant (audited) |
 | `GET` | `/api/v1/agents/models` | 🔒 Ollama models |
-| `POST` | `/api/v1/agents/chat`, `/api/v1/agents/generate` | 🔒 Ollama chat / generation, streamed as Ollama's NDJSON |
+| `POST` | `/api/v1/agents/chat` | 🔒 Ollama chat, streamed as Ollama's NDJSON. Normies: the assistant's model only, no `options` (`403 assistant_restricted`) |
+| `POST` | `/api/v1/agents/generate` | 🔒 `operator` or `admin`: Ollama one-shot generation |
 | `GET` | `/api/v1/agents` | 🔒 Letta agents |
-| `POST` | `/api/v1/agents/{id}/chat` | 🔒 Message a Letta agent (password kept server side) |
+| `POST` | `/api/v1/agents/{id}/chat` | 🔒 Message a Letta agent (password kept server side). Normies: the assistant's agent only |
 | `POST` | `/api/v1/mqtt/publish` | 🔒 Publish an MQTT message (allowed topics only) |
 | `GET` | `/api/v1/edge/metrics` | 🔒 CPU, memory, disk, temperature, uptime and load of the host (the edge device) |
 | `GET` | `/swagger-ui`, `/openapi.json` | Interactive docs / OpenAPI spec |
@@ -153,7 +158,7 @@ For local development only:
    uv venv
    uv pip install -e .                        # p4n4-lib from PyPI
    # lib main: uv pip install "p4n4-lib @ git+https://github.com/raisga/p4n4-lib.git" -e .
-   # monorepo: uv pip install -e ../../core/lib -e .
+   # monorepo: uv pip install -e ../lib -e .
    ```
 
 2. **Point it at a p4n4 project** (scaffolded by `p4n4 init`; flat or multi-layer)
