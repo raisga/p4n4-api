@@ -9,7 +9,7 @@
 # Static docker and docker-compose binaries, copied into the runtime image.
 FROM docker:29-cli@sha256:b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c AS docker-cli
 
-FROM python:3.12-slim-bookworm@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3 AS build
+FROM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83 AS build
 # git only for installing p4n4-lib from a git ref (--build-arg P4N4_LIB=...)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git \
@@ -24,7 +24,7 @@ COPY pyproject.toml README.md LICENSE ./
 COPY p4n4_api/ p4n4_api/
 RUN pip install .
 
-FROM python:3.12-slim-bookworm@sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3
+FROM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="p4n4-api" \
       org.opencontainers.image.description="REST API gateway for the p4n4 platform" \
