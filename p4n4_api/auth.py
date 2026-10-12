@@ -46,6 +46,17 @@ def jwt_secret() -> str:
             )
         return settings.jwt_secret
     path = settings.data_dir / JWT_SECRET_FILE
+    if not path.exists() and not hasattr(os, "link"):
+        # No hard links (Python on Android): create it in place. The first starter
+        # still wins; only a starter racing it on the very first run could read it empty.
+        settings.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(fd, "w") as f:
+                f.write(secrets.token_hex(32))
     if not path.exists():
         settings.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Write a temp file, then link it into place: a concurrent starter either wins

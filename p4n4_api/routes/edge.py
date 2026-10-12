@@ -19,9 +19,27 @@ router = APIRouter(prefix="/edge", tags=["edge"])
 # Board sensors such as acpitz often report a fixed or ambient value, so they're never used.
 _TEMP_SENSORS = ("cpu_thermal", "coretemp", "k10temp", "zenpower", "soc_thermal", "cpu-thermal")
 
+
+def _cpu_percent() -> float:
+    """CPU use since the previous call, or 0.0 where /proc/stat is unreadable (Android
+    apps, such as p4n4-api in Termux)."""
+    try:
+        return psutil.cpu_percent(interval=None)
+    except OSError:
+        return 0.0
+
+
+def _uptime_s() -> int | None:
+    """Seconds since boot, or None where /proc/stat (the boot time) is unreadable."""
+    try:
+        return int(time.time() - psutil.boot_time())
+    except OSError:
+        return None
+
+
 # cpu_percent(interval=None) compares against the previous call, and the first call
 # returns a meaningless 0.0. Prime it at import so the first request gets a real value.
-psutil.cpu_percent(interval=None)
+_cpu_percent()
 
 
 def _temp_c() -> float | None:
@@ -88,12 +106,12 @@ async def metrics(project: OptionalProject) -> EdgeMetrics:
 def host_metrics() -> EdgeMetrics:
     mem = psutil.virtual_memory()
     return EdgeMetrics(
-        cpu_percent=psutil.cpu_percent(interval=None),
+        cpu_percent=_cpu_percent(),
         mem_percent=mem.percent,
         mem_used_mb=round(mem.used / 2**20),
         mem_total_mb=round(mem.total / 2**20),
         disk_percent=_disk_percent(),
         temp_c=_temp_c(),
-        uptime_s=int(time.time() - psutil.boot_time()),
+        uptime_s=_uptime_s(),
         load=[round(x, 2) for x in psutil.getloadavg()],
     )

@@ -20,6 +20,7 @@ from p4n4_api.routes import (
     dashboard,
     devices,
     edge,
+    feed,
     health,
     inference,
     project,
@@ -133,6 +134,8 @@ def create_app() -> FastAPI:
     api_v1.include_router(agents.router, dependencies=normie)
     # Everyone reads the dashboard's views; changing them is admin-only per route.
     api_v1.include_router(dashboard.router, dependencies=normie)
+    # Everyone reads the project's feed; acting on its items is operator-only per route.
+    api_v1.include_router(feed.router, dependencies=normie)
     api_v1.include_router(mqtt_routes.router, dependencies=operator)
     # Operators read the registry; its write routes add the admin check themselves.
     api_v1.include_router(devices.router, dependencies=operator)
