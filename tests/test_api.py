@@ -6,6 +6,7 @@ from p4n4_lib import env as envutil
 from p4n4_lib import manifest as mf
 
 from p4n4_api.docker import daemon_error as real_daemon_error  # before docker_up replaces it
+from tests.conftest import login, make_user
 
 # ── /health ───────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,85 @@ def test_project_info_multi(client, multi_project):
     assert body["layout"] == "multi"
     assert [s["name"] for s in body["stacks"]] == ["iot", "ai"]
     assert [s["relative_dir"] for s in body["stacks"]] == ["iot", "ai"]
+
+
+# ── /api/v1/project/home ──────────────────────────────────────────────────────
+
+
+def test_project_home_defaults_to_home_md(client, flat_project):
+    assert client.get("/api/v1/project/home").status_code == 204
+    (flat_project / "HOME.md").write_text("# Welcome\n\nThe greenhouse.\n")
+    r = client.get("/api/v1/project/home")
+    assert r.status_code == 200
+    assert r.json() == {"markdown": "# Welcome\n\nThe greenhouse.\n"}
+
+
+def test_project_home_from_manifest(client, flat_project):
+    path = flat_project / mf.MANIFEST_FILE
+    data = mf.load(path)
+    data["dashboard"] = {"home": "docs/home.md"}
+    mf.save(path, data)
+    (flat_project / "HOME.md").write_text("not this one")
+    assert client.get("/api/v1/project/home").status_code == 204
+    (flat_project / "docs").mkdir()
+    (flat_project / "docs" / "home.md").write_text("Hello")
+    assert client.get("/api/v1/project/home").json() == {"markdown": "Hello"}
+
+
+def test_project_home_in_the_dashboards_language(client, flat_project):
+    (flat_project / "HOME.md").write_text("Welcome")
+    (flat_project / "HOME.es.md").write_text("Bienvenido")
+    home = "/api/v1/project/home"
+    assert client.get(home).json() == {"markdown": "Welcome"}
+    assert client.get(home, params={"lang": "es"}).json() == {"markdown": "Bienvenido"}
+    assert client.get(home, params={"lang": "es-MX"}).json() == {"markdown": "Bienvenido"}
+    assert client.get(home, params={"lang": "fr"}).json() == {"markdown": "Welcome"}
+    assert client.get(home, params={"lang": "../x"}).status_code == 422
+    # An empty translation falls back too.
+    (flat_project / "HOME.es.md").write_text("\n")
+    assert client.get(home, params={"lang": "es"}).json() == {"markdown": "Welcome"}
+
+
+def test_project_home_translation_beside_the_named_file(client, flat_project):
+    path = flat_project / mf.MANIFEST_FILE
+    data = mf.load(path)
+    data["dashboard"] = {"home": "docs/home.md"}
+    mf.save(path, data)
+    (flat_project / "docs").mkdir()
+    (flat_project / "docs" / "home.es.md").write_text("Hola")
+    home = "/api/v1/project/home"
+    assert client.get(home, params={"lang": "es"}).json() == {"markdown": "Hola"}
+    assert client.get(home).status_code == 204
+
+
+def test_project_home_empty_is_none(client, flat_project):
+    (flat_project / "HOME.md").write_text("  \n\n")
+    r = client.get("/api/v1/project/home")
+    assert r.status_code == 204
+    assert r.content == b""
+
+
+def test_project_home_stays_inside_project(client, flat_project, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside") / "secret.md"
+    outside.write_text("secret")
+    path = flat_project / mf.MANIFEST_FILE
+    data = mf.load(path)
+    for home in [str(outside), f"../{outside.parent.name}/secret.md"]:
+        data["dashboard"] = {"home": home}
+        mf.save(path, data)
+        assert client.get("/api/v1/project/home").status_code == 204
+    data["dashboard"] = {"home": "HOME.md"}
+    mf.save(path, data)
+    (flat_project / "HOME.md").symlink_to(outside)
+    assert client.get("/api/v1/project/home").status_code == 204
+
+
+def test_project_home_normies_can_read(anon, flat_project):
+    (flat_project / "HOME.md").write_text("Hello")
+    make_user("vera", "normie")
+    token = login(anon, "vera")["access_token"]
+    r = anon.get("/api/v1/project/home", headers={"Authorization": f"Bearer {token}"})
+    assert r.json() == {"markdown": "Hello"}
 
 
 # ── /api/v1/project/validate ──────────────────────────────────────────────────

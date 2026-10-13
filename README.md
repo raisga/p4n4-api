@@ -32,6 +32,7 @@ Compose status — both flat and multi-layer project layouts). Endpoints marked 
 | `GET` `PATCH` `DELETE` | `/api/v1/devices/{id}` | 🔒 Read; 🔑 change (`name`, `description`, `enabled`) or remove |
 | `POST` | `/api/v1/devices/{id}/key` | 🔑 Rotate the API key (old key and its tokens stop at once) |
 | `GET` | `/api/v1/project` | 🔒 Manifest (including its optional `template` and `dashboard` blocks), layout (`flat`/`multi`), and per-stack directories |
+| `GET` | `/api/v1/project/home` | 🔒 `{markdown}` for p4n4-dashboard's Home tab: the file `.p4n4.json` `dashboard.home` names, else `HOME.md`, or its `?lang=` translation beside it (`HOME.es.md`) first; `204` when it's missing, empty, over 256 KiB or outside the project |
 | `GET` | `/api/v1/project/validate` | 🔒 Run `p4n4_lib.validate` checks; returns `{ok, passed, errors}` |
 | `GET` | `/api/v1/stacks` | 🔒 Compose service status per stack (`503` if Docker is unreachable) |
 | `GET` | `/api/v1/stacks/{stack}` | 🔒 One stack's service status (404 if not enabled) |
@@ -593,7 +594,7 @@ p4n4-api/
 │       ├── users.py         # /api/v1/users (admin user management)
 │       ├── devices.py       # /api/v1/devices (registry, key rotation)
 │       ├── health.py        # GET /health, /ready, /api/v1/version
-│       ├── project.py       # GET /api/v1/project, /project/validate
+│       ├── project.py       # GET /api/v1/project, /project/home, /project/validate
 │       ├── stacks.py        # GET /api/v1/stacks, /stacks/{stack}
 │       ├── control.py       # Stack up/down/restart, service restart, logs (SSE)
 │       ├── jobs.py          # GET /api/v1/jobs
