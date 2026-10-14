@@ -65,6 +65,14 @@ def test_views_are_validated(admin, body):
     assert admin.put("/api/v1/dashboard/views", json=body).status_code == 422
 
 
+def test_the_feed_tab_can_be_ordered(admin):
+    # The dashboard sends "feed" in every order once the project serves it (p4n4-lib 0.2.1)
+    order = ["feed", "services", "edge", "agent", "grafana", "video"]
+    r = admin.put("/api/v1/dashboard/views", json={"tab_order": order})
+    assert r.status_code == 200, r.text
+    assert r.json()["tab_order"] == order
+
+
 def test_a_broken_stored_value_falls_back_to_the_defaults(normie):
     with db.connect() as conn:
         store.put(conn, VIEWS_KEY, {"normie_tabs": ["nope"]}, "hand-edit")

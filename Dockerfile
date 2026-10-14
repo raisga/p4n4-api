@@ -17,7 +17,7 @@ RUN apt-get update \
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-ARG P4N4_LIB="p4n4-lib>=0.2.0,<0.3"
+ARG P4N4_LIB="p4n4-lib>=0.3.0,<0.4"
 RUN pip install "$P4N4_LIB"
 WORKDIR /src
 COPY pyproject.toml README.md LICENSE ./

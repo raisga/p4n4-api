@@ -122,6 +122,14 @@ def test_an_item_id_cannot_climb_the_upstream_path(client, feed_project, upstrea
     assert upstream.requests == []
 
 
+@pytest.mark.parametrize("item_id", ["%2E%2E", "%2E"])
+def test_a_dot_segment_is_not_an_item_id(client, feed_project, upstream, item_id):
+    # The HTTP client would resolve <url>/../action to the upstream's parent path
+    r = client.post(f"/api/v1/feed/{item_id}/action", json={"action": "attended"})
+    assert r.status_code == 400 and r.json()["error"]["code"] == "bad_item_id"
+    assert upstream.requests == []
+
+
 def test_no_feed_configured_is_a_404(client, multi_project, upstream):
     r = client.get("/api/v1/feed")
     assert r.status_code == 404 and r.json()["error"]["code"] == "no_feed"

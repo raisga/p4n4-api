@@ -10,7 +10,7 @@
 # it's opt-in, with docker-compose.docker.yml (see README "Running in Docker").
 services:
   api:
-    image: ghcr.io/raisga/p4n4-api:${P4N4_API_VERSION:-0.1.0}
+    image: ghcr.io/raisga/p4n4-api:${P4N4_API_VERSION:-0.2.0}
     container_name: p4n4-api
     restart: unless-stopped
     ports:

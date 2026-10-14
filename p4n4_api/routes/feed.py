@@ -35,8 +35,9 @@ operator_only = [Depends(auth.require_role("operator"))]
 TIMEOUT_S = 10
 # Swapped in by tests (httpx.MockTransport); None means real HTTP.
 transport: httpx.AsyncBaseTransport | None = None
-# What an item id may be: it goes into the upstream's URL
-ITEM_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+# What an item id may be: it goes into the upstream's URL. Never "." or "..", which the
+# HTTP client resolves as path segments, sending the action (and token) elsewhere
+ITEM_ID = re.compile(r"^(?!\.{1,2}$)[A-Za-z0-9._:-]{1,128}$")
 
 
 class FeedAction(BaseModel):
