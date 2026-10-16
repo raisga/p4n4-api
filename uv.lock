@@ -481,7 +481,7 @@ wheels = [
 
 [[package]]
 name = "p4n4-api"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiomqtt" },
@@ -508,7 +508,7 @@ requires-dist = [
     { name = "argon2-cffi", specifier = ">=23.1" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "p4n4-lib", specifier = ">=0.3.0" },
+    { name = "p4n4-lib", specifier = ">=0.4.0" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pydantic-settings", specifier = ">=2.7" },
     { name = "pyjwt", specifier = ">=2.8" },
@@ -521,14 +521,14 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "p4n4-lib"
-version = "0.3.0"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/86/44/e03f6530d0bc9b9851b87a8d51d8e71ec7c08570bcf380e847afc8377ae4/p4n4_lib-0.3.0.tar.gz", hash = "sha256:7a43aeaca07a47228550b8cbcfeac1b3ffe59998534b047ef97b853f9027e4d1", size = 71559, upload-time = "2026-10-14T15:23:23.287Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/15/46/d86fec97b01484cf9a58a3918cd2c76e9e7f91703cbd7e3e0aecd0452114/p4n4_lib-0.4.0.tar.gz", hash = "sha256:b8a144147267a53d5b70f4697b04e9d5b3ed5bbdb8da9b045a119fe1c2f86744", size = 85865, upload-time = "2026-10-16T21:02:25.153Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/d1/51995fa9e8e06a08c7fd67f6dd2d4148f4c9f71501a043de8553f474977a/p4n4_lib-0.3.0-py3-none-any.whl", hash = "sha256:547ca1f3af693cbd330bebc67bae67621faff1a694ba548a3cfe922456d1e436", size = 30232, upload-time = "2026-10-14T15:23:21.813Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/8f/021f7d0b8170361b0944ebbf7f16bf8a00d0aad3350daff98ae3cc66721e/p4n4_lib-0.4.0-py3-none-any.whl", hash = "sha256:d68ec339e07f5213256437e8d41ac447d58c1451890b08633508bef390fde3a7", size = 38902, upload-time = "2026-10-16T21:02:23.784Z" },
 ]
 
 [[package]]
