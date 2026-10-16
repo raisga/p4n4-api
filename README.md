@@ -25,14 +25,16 @@ Compose status — both flat and multi-layer project layouts). Endpoints marked 
 | `POST` | `/api/v1/auth/logout` | Revoke the refresh token and its whole sign-in, access tokens included |
 | `POST` | `/api/v1/auth/password` | Change your own password (🔒 any role): signs out every other sign-in and returns a new pair |
 | `GET` | `/api/v1/auth/me` | The signed-in user and role (🔒 any role) |
-| `GET` `POST` | `/api/v1/users` | 🔑 List users / create one (`{username, password, role}`, role defaults to `operator`) |
-| `GET` `PATCH` `DELETE` | `/api/v1/users/{username}` | 🔑 Read, change (`{role?, password?}`) or remove a user. The last admin can't be demoted or removed (`409`) |
+| `GET` `POST` | `/api/v1/users` | 🔑 List users (with `last_login_at`) / create one (`{username, password, role, must_change_password?}`, role defaults to `operator`) |
+| `GET` `PATCH` `DELETE` | `/api/v1/users/{username}` | 🔑 Read, change (`{role?, password?, must_change_password?}`) or remove a user. The last admin can't be demoted or removed (`409`) |
+| `POST` | `/api/v1/users/{username}/sign-out` | 🔑 Sign the user out on every device, keeping their password (audited) |
 | `GET` | `/api/v1/devices` | 🔒 Device registry, paginated (`limit`, `offset`) |
 | `POST` | `/api/v1/devices` | 🔑 Register a device; the response holds its API key, shown once |
 | `GET` `PATCH` `DELETE` | `/api/v1/devices/{id}` | 🔒 Read; 🔑 change (`name`, `description`, `enabled`) or remove |
 | `POST` | `/api/v1/devices/{id}/key` | 🔑 Rotate the API key (old key and its tokens stop at once) |
 | `GET` | `/api/v1/project` | 🔒 Manifest (including its optional `template` and `dashboard` blocks), layout (`flat`/`multi`), and per-stack directories |
 | `GET` | `/api/v1/project/home` | 🔒 `{markdown}` for p4n4-dashboard's Home tab: the file `.p4n4.json` `dashboard.home` names, else `HOME.md`, or its `?lang=` translation beside it (`HOME.es.md`) first; `204` when it's missing, empty, over 256 KiB or outside the project |
+| `GET` | `/api/v1/project/vision` | 🔒 What p4n4-dashboard's Video tab draws over the cameras: the JSON file `.p4n4.json` `dashboard.vision.file` names (labels, alert rules, each camera's recorded boxes and behaviours), with `dashboard.vision.live` as `live`; `204` when there's none, or the file is missing, invalid, over 8 MiB or outside the project |
 | `GET` | `/api/v1/project/validate` | 🔒 Run `p4n4_lib.validate` checks; returns `{ok, passed, errors}` |
 | `GET` | `/api/v1/stacks` | 🔒 Compose service status per stack (`503` if Docker is unreachable) |
 | `GET` | `/api/v1/stacks/{stack}` | 🔒 One stack's service status (404 if not enabled) |
@@ -49,6 +51,13 @@ Compose status — both flat and multi-layer project layouts). Endpoints marked 
 | `GET` | `/api/v1/inference/results` | 🔒 Results the runner's pipeline stored (`ai_events`) |
 | `GET` | `/api/v1/dashboard/views` | 🔒 Tabs each p4n4-dashboard view shows and their order: `{tab_order, power_tabs, normie_tabs}` (null = the dashboard's default) |
 | `PUT` | `/api/v1/dashboard/views` | 🔑 Set them for every device (audited) |
+| `GET` | `/api/v1/dashboard/view-settings` | 🔒 What else the power and normie views show: `{power, normie}`, each `{start_tab, home_cards, grafana_path, cameras, camera_overlay, alerts, alert_sound}` (null = the dashboard's default; admins always get the defaults) |
+| `PUT` | `/api/v1/dashboard/view-settings` | 🔑 Set both views' settings for every device (audited) |
+| `GET` | `/api/v1/dashboard/banner` | 🔒 The message shown above every dashboard view: `{text, tone, until}` (`tone` is `info` or `warning`; empty `text` = none, also once `until` has passed) |
+| `PUT` | `/api/v1/dashboard/banner` | 🔑 Show a banner, or clear it with empty `text` (audited) |
+| `GET` | `/api/v1/chats` | 🔑 The project's messaging channels (e.g. its Telegram bot) and the chats linked to them, from the service `.p4n4.json` `dashboard.chats` names (its token stays here); `404 no_chats` without one |
+| `POST` | `/api/v1/chats/codes` | 🔑 A one-time code that links a chat to the project's bot, with its links (audited) |
+| `DELETE` | `/api/v1/chats/{id}` | 🔑 Unlink a chat: no more alerts, and the bot stops answering it (audited) |
 | `GET` | `/api/v1/agents/config` | 🔒 The assistant everyone chats with: `{backend, model, agent_id}` (null = the first one listed), and `updated_at`/`updated_by` (null until someone chooses; p4n4-dashboard then offers its brand's default) |
 | `PUT` | `/api/v1/agents/config` | 🔒 `operator` or `admin`: choose the assistant (audited) |
 | `GET` | `/api/v1/agents/models` | 🔒 Ollama models |
@@ -103,14 +112,16 @@ implemented. See [TODO.md](TODO.md) for the plan.
               │  └───────────────┘  │
               └──────────┬──────────┘
                          │ p4n4-net (Docker bridge)
-         ┌───────────────┼───────────────────┐
-         ▼               ▼                   ▼
-  ┌─────────────┐ ┌─────────────┐   ┌──────────────┐
-  │  p4n4-iot   │ │  p4n4-ai    │   │  p4n4-edge   │
-  │  ─────────  │ │  ─────────  │   │  ──────────  │
-  │  MQTT       │ │  Ollama     │   │  EI Runner   │
-  │  InfluxDB   │ │  Letta      │   └──────────────┘
-  └─────────────┘ └─────────────┘
+         ┌───────────────┴───┐
+         ▼                   ▼
+  ┌─────────────┐   ┌─────────────────┐
+  │  p4n4-iot   │   │  p4n4-ai        │
+  │  ─────────  │   │  ─────────────  │
+  │  MQTT       │   │  Ollama         │
+  │  InfluxDB   │   │  Letta          │
+  └─────────────┘   │  EI Runner      │
+                    │  (ei-runner)    │
+                    └─────────────────┘
 ```
 
 **Data flow:**
@@ -208,6 +219,8 @@ p4n4-api users bootstrap                 # first admin with a generated password
 p4n4-api users dev                       # admin, power, normie (see Dev users)
 p4n4-api users add alice                 # operator by default; --role normie|admin
 p4n4-api users passwd alice              # also signs alice out everywhere
+p4n4-api users passwd alice --must-change  # …and she picks a new one at her next sign-in
+p4n4-api users sign-out alice            # signs alice out everywhere, same password
 p4n4-api users role alice admin
 p4n4-api users remove alice
 # Scripts: echo "$PASSWORD" | p4n4-api users add alice --password-stdin
@@ -312,13 +325,13 @@ All configuration is read from environment variables (via `pydantic-settings`; e
 | `P4N4_API_MQTT_ENABLED` | `false` turns the MQTT connection off (no publishing, no live stream). Default `true` |
 | `P4N4_API_MQTT_HOST`, `_PORT` | Broker (default `localhost:1883`, the IoT stack's) |
 | `P4N4_API_MQTT_USERNAME`, `_PASSWORD` | Broker credentials, if it requires them |
-| `P4N4_API_EDGE_RUNNER_URL` | The edge stack's inference runner (default `http://localhost:8080`, its published port) |
+| `P4N4_API_EDGE_RUNNER_URL` | The edge inference runner, the ai stack's `ei-runner` (default `http://localhost:8080`, its published port) |
 | `P4N4_API_MQTT_PUBLISH_ALLOW` | Topic filters `POST /mqtt/publish` may use, comma-separated (`+`, `#` wildcards). Default `#` |
 | `P4N4_API_MQTT_PUBLISH_DENY` | Topic filters it may not use; wins over allow. Default `sensors/#,inference/#` (device data, which Node-RED stores). `none` for no denials |
 | `P4N4_API_OLLAMA_URL` | Ollama (default `http://localhost:11434`, the ai stack's published port) |
 | `P4N4_API_LETTA_URL` | Letta (default `http://localhost:8283`) |
 | `P4N4_API_LETTA_PASSWORD` | Letta's server password; default `LETTA_SERVER_PASSWORD` from the project's `ai/.env`. Sent only from the API to Letta |
-| `P4N4_API_INFLUXDB_AI_EVENTS_BUCKET` | Where the runner stores results; default `INFLUXDB_BUCKET_AI_EVENTS` from the project's `edge/.env`, then `ai_events` |
+| `P4N4_API_INFLUXDB_AI_EVENTS_BUCKET` | Where the runner stores results; default `INFLUXDB_BUCKET_AI_EVENTS` from the project's `ai/.env` (`edge/.env` in a project from before the edge layer merged into ai), then `ai_events` |
 | `P4N4_API_DOCKER` | `off` when the API has no Docker access (a container without the socket): stack status, control and logs return `503`, and `/ready` doesn't require Docker. Default `on` |
 | `P4N4_API_DISK_PATH` | Filesystem `/edge/metrics` reports as `disk_percent` (default `/`) |
 | `P4N4_API_AUTH` | `off` disables auth: every request is treated as an admin. **Development only**; logs a warning at startup |
@@ -490,8 +503,8 @@ Fields: `cpu_percent`, `mem_percent`, `mem_used_mb`, `mem_total_mb`, `disk_perce
 `uptime_s`, `load` (1/5/15 min) and `temp_c`. `temp_c` comes from a CPU/SoC sensor
 (`cpu_thermal` on a Raspberry Pi, `coretemp`/`k10temp` on x86) and is omitted when none is
 found, e.g. on macOS, Windows or in a VM. `inference_ms` is the edge runner's last pipeline
-inference latency (Edge Impulse or ONNX), when the project has the edge layer and the runner
-answers within 0.5 s.
+inference latency (Edge Impulse or ONNX), when the project runs the runner (the ai layer's
+`ei-runner` profile, or a legacy edge layer) and it answers within 0.5 s.
 
 ### Inference (normie+ reads, operator+ runs)
 
@@ -501,7 +514,7 @@ answers within 0.5 s.
 | `POST` | `/api/v1/inference` | Operator+. `{values: [numbers], device?}` → `{label, confidence, anomaly_score, latency_ms, backend, mode, device, timestamp}`. Returned only: not published or stored |
 | `GET` | `/api/v1/inference/results` | Stored results, newest first: `?device=&label=&backend=&start=&stop=&limit=` |
 
-The edge stack runs one inference runner whose `MODEL_BACKEND` picks the model: an Edge
+The ai stack's `ei-runner` is one inference runner whose `MODEL_BACKEND` picks the model: an Edge
 Impulse `.eim` (`backend: edge-impulse`, the runner's `mode: model`), an ONNX model
 (`onnx`), or simulated results when no model is loaded (`mock`). The API works the same with
 each. Before calling the runner it checks the vector's length against the model
@@ -594,7 +607,7 @@ p4n4-api/
 │       ├── users.py         # /api/v1/users (admin user management)
 │       ├── devices.py       # /api/v1/devices (registry, key rotation)
 │       ├── health.py        # GET /health, /ready, /api/v1/version
-│       ├── project.py       # GET /api/v1/project, /project/home, /project/validate
+│       ├── project.py       # GET /api/v1/project, /project/home, /project/vision, /project/validate
 │       ├── stacks.py        # GET /api/v1/stacks, /stacks/{stack}
 │       ├── control.py       # Stack up/down/restart, service restart, logs (SSE)
 │       ├── jobs.py          # GET /api/v1/jobs
@@ -603,6 +616,7 @@ p4n4-api/
 │       ├── inference.py     # Runner info, inference, stored results
 │       ├── agents.py        # Ollama models/chat/generate, Letta agents
 │       ├── mqtt.py          # POST /api/v1/mqtt/publish
+│       ├── chats.py         # /api/v1/chats (admins link and unlink the project's chats)
 │       └── edge.py          # GET /api/v1/edge/metrics
 └── tests/
 ```
@@ -682,8 +696,7 @@ dashboard uses `http://p4n4-api:8000`. `p4n4 up --api` in the CLI is planned.
 - [TODO.md](TODO.md) — status, milestones and open questions
 - [p4n4-lib](https://github.com/raisga/p4n4-lib) — shared library (manifest, layout, validation, Compose wrappers) consumed by this package
 - [p4n4-iot](https://github.com/raisga/p4n4-iot) — IoT stack (MQTT, InfluxDB, Node-RED, Grafana)
-- [p4n4-ai](https://github.com/raisga/p4n4-ai) — GenAI stack (Ollama, Letta, n8n)
-- [p4n4-edge](https://github.com/raisga/p4n4-edge) — Edge AI stack (Edge Impulse runner)
+- [p4n4-ai](https://github.com/raisga/p4n4-ai) — AI stack (Ollama, Letta, n8n, and the Edge Impulse / ONNX runner, its `ei-runner` profile, formerly p4n4-edge)
 - [FastAPI](https://fastapi.tiangolo.com/) — Python web framework (OpenAPI 3.1 built-in)
 - [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) — settings management via environment variables
 

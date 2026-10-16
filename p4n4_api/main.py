@@ -16,6 +16,7 @@ from p4n4_api.config import load_settings
 from p4n4_api.mqtt import bridge
 from p4n4_api.routes import (
     agents,
+    chats,
     control,
     dashboard,
     devices,
@@ -143,6 +144,8 @@ def create_app() -> FastAPI:
     api_v1.include_router(telemetry.router)
     admin = [Depends(auth.require_role("admin"))]
     api_v1.include_router(users_routes.router, dependencies=admin)
+    # Linking a chat gives it the project's alerts and its agent: admins only.
+    api_v1.include_router(chats.router, dependencies=admin)
     api_v1.include_router(audit_routes.router, dependencies=admin)
     app.include_router(api_v1)
     return app

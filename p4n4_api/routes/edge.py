@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from p4n4_api import edge_runner
 from p4n4_api.config import load_settings
-from p4n4_api.deps import OptionalProject
+from p4n4_api.deps import OptionalProject, runner_layer
 
 router = APIRouter(prefix="/edge", tags=["edge"])
 
@@ -84,7 +84,7 @@ RUNNER_TIMEOUT_S = 0.5  # metrics are polled often: never wait long for the runn
 
 
 async def inference_ms_from_runner(project: tuple | None) -> float | None:
-    if project is None or "edge" not in project[1].get("layers", []):
+    if runner_layer(project) is None:
         return None
     try:
         latency = (await edge_runner.health(RUNNER_TIMEOUT_S)).get("last_latency_ms")
@@ -96,7 +96,7 @@ async def inference_ms_from_runner(project: tuple | None) -> float | None:
 @router.get("/metrics", response_model_exclude_none=True)
 async def metrics(project: OptionalProject) -> EdgeMetrics:
     """Snapshot of the host's CPU, memory, disk, temperature, uptime and load, plus the
-    edge runner's last inference latency when the project has the edge layer."""
+    edge runner's last inference latency when the project runs it (the ai layer's ei-runner)."""
     host, inference_ms = await asyncio.gather(
         asyncio.to_thread(host_metrics), inference_ms_from_runner(project)
     )

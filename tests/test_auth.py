@@ -134,7 +134,12 @@ def test_login_and_me(anon):
     assert (tokens["username"], tokens["role"]) == ("alice", "operator")
 
     r = anon.get("/api/v1/auth/me", headers=_bearer(tokens["access_token"]))
-    assert r.json() == {"username": "alice", "role": "operator", "auth": True}
+    assert r.json() == {
+        "username": "alice",
+        "role": "operator",
+        "auth": True,
+        "password_change_required": False,
+    }
 
     claims = jwt.decode(tokens["access_token"], options={"verify_signature": False})
     assert claims["exp"] - claims["iat"] == 3600
@@ -454,6 +459,7 @@ def test_auth_off(anon, flat_project, monkeypatch):
         "username": "anonymous",
         "role": "admin",
         "auth": False,
+        "password_change_required": False,
     }
 
 
@@ -504,6 +510,27 @@ def test_cli_users(monkeypatch, capsys, anon):
     assert cli(["users", "remove", "admin"]) == 0
     assert cli(["users", "remove", "admin"]) == 1
     assert "No user 'admin'" in capsys.readouterr().err
+
+
+def test_cli_sign_out_and_must_change(monkeypatch, capsys, anon):
+    monkeypatch.setattr("sys.stdin", io.StringIO(PASSWORD + "\n"))
+    assert (
+        cli(["users", "add", "tablet", "--role", "normie", "--password-stdin", "--must-change"])
+        == 0
+    )
+    tokens = login(anon, "tablet")
+    assert tokens["password_change_required"] is True
+    assert cli(["users", "list"]) == 0
+    assert "must change password" in capsys.readouterr().out
+
+    assert cli(["users", "sign-out", "tablet"]) == 0
+    r = anon.post("/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+    assert r.status_code == 401
+    assert "Signed 'tablet' out everywhere." in capsys.readouterr().out
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("another long password\n"))
+    assert cli(["users", "passwd", "tablet", "--password-stdin"]) == 0
+    assert login(anon, "tablet", "another long password")["password_change_required"] is False
 
 
 def test_cli_rejects_short_password(monkeypatch, capsys):

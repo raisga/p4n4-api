@@ -35,6 +35,8 @@ class User:
     username: str
     role: str
     token_gen: int = 0
+    # Set by an admin: every route but changing the password answers 403 until it's done
+    must_change_password: bool = False
 
     def has_role(self, role: str) -> bool:
         """Roles are ranked: an admin can do everything an operator can, and so on down."""
@@ -81,45 +83,66 @@ def _check_role(role: str) -> None:
 
 
 def _row_to_user(row: sqlite3.Row | None) -> User | None:
-    return User(row["username"], row["role"], row["token_gen"]) if row else None
+    if row is None:
+        return None
+    return User(row["username"], row["role"], row["token_gen"], bool(row["must_change_password"]))
 
 
 def get(conn: sqlite3.Connection, username: str) -> User | None:
     row = conn.execute(
-        "SELECT username, role, token_gen FROM users WHERE username = ?", (username,)
+        "SELECT username, role, token_gen, must_change_password FROM users WHERE username = ?",
+        (username,),
     ).fetchone()
     return _row_to_user(row)
 
 
+# A user's public fields: no password hash or token generation.
+_PUBLIC = "username, role, created_at, last_login_at, must_change_password"
+
+
+def _public(row: sqlite3.Row) -> dict:
+    return {**dict(row), "must_change_password": bool(row["must_change_password"])}
+
+
 def list_all(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute("SELECT username, role, created_at FROM users ORDER BY username")
-    return [dict(row) for row in rows]
+    rows = conn.execute(f"SELECT {_PUBLIC} FROM users ORDER BY username")
+    return [_public(row) for row in rows]
 
 
 def info(conn: sqlite3.Connection, username: str) -> dict | None:
-    """A user's public fields (no password hash), or None."""
-    row = conn.execute(
-        "SELECT username, role, created_at FROM users WHERE username = ?", (username,)
-    ).fetchone()
-    return dict(row) if row else None
+    """A user's public fields, or None."""
+    row = conn.execute(f"SELECT {_PUBLIC} FROM users WHERE username = ?", (username,)).fetchone()
+    return _public(row) if row else None
 
 
 def count(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
 
 
-def create(conn: sqlite3.Connection, username: str, password: str, role: str) -> User:
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def create(
+    conn: sqlite3.Connection,
+    username: str,
+    password: str,
+    role: str,
+    *,
+    must_change_password: bool = False,
+) -> User:
     name = normalize_username(username)
     _check_password(password)
     _check_role(role)
     try:
         conn.execute(
-            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
-            (name, hasher.hash(password), role, datetime.now(UTC).isoformat(timespec="seconds")),
+            "INSERT INTO users (username, password_hash, role, created_at, must_change_password) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, hasher.hash(password), role, _now(), int(must_change_password)),
         )
     except sqlite3.IntegrityError as exc:
         raise UserExists(f"User '{name}' already exists.") from exc
-    return User(name, role)
+    return User(name, role, must_change_password=must_change_password)
 
 
 def _last_admin(username: str) -> LastAdminError:
@@ -141,7 +164,7 @@ def bootstrap_admin(conn: sqlite3.Connection, username: str = "admin") -> str | 
     created = conn.execute(
         "INSERT INTO users (username, password_hash, role, created_at) "
         "SELECT ?, ?, 'admin', ? WHERE NOT EXISTS (SELECT 1 FROM users)",
-        (name, hasher.hash(password), datetime.now(UTC).isoformat(timespec="seconds")),
+        (name, hasher.hash(password), _now()),
     ).rowcount
     return password if created else None
 
@@ -153,7 +176,7 @@ def seed_dev_users(conn: sqlite3.Connection) -> list[str]:
     purpose), so it's safe on every start.
     """
     created = []
-    now = datetime.now(UTC).isoformat(timespec="seconds")
+    now = _now()
     for name, role in DEV_USERS:
         if conn.execute(
             "INSERT OR IGNORE INTO users (username, password_hash, role, created_at) "
@@ -179,15 +202,46 @@ def delete(conn: sqlite3.Connection, username: str, *, keep_admin: bool = False)
     return False
 
 
-def set_password(conn: sqlite3.Connection, username: str, password: str) -> bool:
-    """Change a password and sign the user out everywhere."""
+def set_password(
+    conn: sqlite3.Connection, username: str, password: str, *, must_change: bool = False
+) -> bool:
+    """Change a password and sign the user out everywhere.
+
+    With `must_change` (an admin resetting it), the user must choose another one at their
+    next sign-in; otherwise any earlier requirement to do so is met.
+    """
     _check_password(password)
     updated = conn.execute(
-        "UPDATE users SET password_hash = ?, token_gen = token_gen + 1 WHERE username = ?",
-        (hasher.hash(password), username),
+        "UPDATE users SET password_hash = ?, token_gen = token_gen + 1, must_change_password = ? "
+        "WHERE username = ?",
+        (hasher.hash(password), int(must_change), username),
     ).rowcount
     conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
     return updated > 0
+
+
+def set_must_change_password(conn: sqlite3.Connection, username: str, value: bool) -> bool:
+    """Require (or stop requiring) a new password. It applies on the next request."""
+    return (
+        conn.execute(
+            "UPDATE users SET must_change_password = ? WHERE username = ?",
+            (int(value), username),
+        ).rowcount
+        > 0
+    )
+
+
+def sign_out_everywhere(conn: sqlite3.Connection, username: str) -> bool:
+    """End every sign-in of a user, on every device; their password stays as it is."""
+    updated = conn.execute(
+        "UPDATE users SET token_gen = token_gen + 1 WHERE username = ?", (username,)
+    ).rowcount
+    conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+    return updated > 0
+
+
+def record_login(conn: sqlite3.Connection, username: str) -> None:
+    conn.execute("UPDATE users SET last_login_at = ? WHERE username = ?", (_now(), username))
 
 
 def set_role(

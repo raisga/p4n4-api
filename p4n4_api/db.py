@@ -84,6 +84,12 @@ MIGRATIONS = (
         updated_by TEXT NOT NULL
     );
     """,
+    """
+    -- Last password sign-in (POST /auth/token), for admins to spot unused accounts
+    ALTER TABLE users ADD COLUMN last_login_at TEXT;
+    -- Set by an admin: the user must choose a new password before anything else
+    ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;
+    """,
 )
 
 

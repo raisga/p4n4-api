@@ -61,16 +61,18 @@ class Config:
 
 
 def config(project: tuple | None) -> Config:
-    """Settings first, then the project's iot/.env (the IoT stack's own; edge/.env for the
-    AI events bucket), then defaults."""
+    """Settings first, then the project's iot/.env (the IoT stack's own; for the AI events
+    bucket, the runner's ai/.env, or edge/.env in a project from before the edge layer
+    merged into ai), then defaults."""
     settings = load_settings()
-    iot, edge = layer_env(project, "iot"), layer_env(project, "edge")
+    iot, ai, edge = layer_env(project, "iot"), layer_env(project, "ai"), layer_env(project, "edge")
     return Config(
         url=settings.influxdb_url.rstrip("/"),
         token=settings.influxdb_token or iot.get("INFLUXDB_TOKEN") or None,
         org=settings.influxdb_org or iot.get("INFLUXDB_ORG") or "ming",
         bucket=settings.influxdb_bucket or iot.get("INFLUXDB_BUCKET") or "raw_telemetry",
         ai_events_bucket=settings.influxdb_ai_events_bucket
+        or ai.get("INFLUXDB_BUCKET_AI_EVENTS")
         or edge.get("INFLUXDB_BUCKET_AI_EVENTS")
         or iot.get("INFLUXDB_BUCKET_AI_EVENTS")
         or "ai_events",

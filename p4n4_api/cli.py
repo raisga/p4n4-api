@@ -26,7 +26,12 @@ def _users(args: argparse.Namespace) -> int:
             if not rows:
                 print("No users. Create one with: p4n4-api users add <name> --role admin")
             for row in rows:
-                print(f"{row['username']:<32} {row['role']:<9} created {row['created_at']}")
+                seen = row["last_login_at"] or "never"
+                flag = "  must change password" if row["must_change_password"] else ""
+                print(
+                    f"{row['username']:<32} {row['role']:<9} created {row['created_at']}"
+                    f"  last sign-in {seen}{flag}"
+                )
             return 0
         if args.action == "bootstrap":
             password = users.bootstrap_admin(conn, args.username)
@@ -46,7 +51,9 @@ def _users(args: argparse.Namespace) -> int:
             return 0
         name = users.normalize_username(args.username)
         if args.action == "add":
-            user = users.create(conn, name, _read_password(args), args.role)
+            user = users.create(
+                conn, name, _read_password(args), args.role, must_change_password=args.must_change
+            )
             print(f"Created {user.role} '{user.username}'.")
             return 0
         if users.get(conn, name) is None:
@@ -55,8 +62,13 @@ def _users(args: argparse.Namespace) -> int:
             users.delete(conn, name)
             print(f"Removed '{name}'.")
         elif args.action == "passwd":
-            users.set_password(conn, name, _read_password(args))
+            users.set_password(conn, name, _read_password(args), must_change=args.must_change)
             print(f"Changed the password for '{name}' and signed them out everywhere.")
+            if args.must_change:
+                print("They'll choose a new one at their next sign-in.")
+        elif args.action == "sign-out":
+            users.sign_out_everywhere(conn, name)
+            print(f"Signed '{name}' out everywhere.")
         elif args.action == "role":
             users.set_role(conn, name, args.role)
             print(f"'{name}' is now {args.role}.")
@@ -87,7 +99,15 @@ def _parser() -> argparse.ArgumentParser:
         if action == "add":
             p.add_argument("--role", choices=users.ROLES, default="operator")
         p.add_argument("--password-stdin", action="store_true", help="Read the password from stdin")
+        p.add_argument(
+            "--must-change",
+            action="store_true",
+            help="Make them choose a new password at their next sign-in",
+        )
     actions.add_parser("remove", help="Delete a user").add_argument("username")
+    actions.add_parser(
+        "sign-out", help="Sign a user out on every device, keeping their password"
+    ).add_argument("username")
     role = actions.add_parser("role", help="Change a user's role")
     role.add_argument("username")
     role.add_argument("role", choices=users.ROLES)

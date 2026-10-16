@@ -44,6 +44,8 @@ class TokenResponse(BaseModel):
     refresh_expires_in: int
     username: str
     role: str
+    # An admin set or reset the password: choose a new one (POST /auth/password) first
+    password_change_required: bool = False
 
 
 class DeviceTokenResponse(BaseModel):
@@ -72,6 +74,7 @@ def token(body: LoginRequest | ApiKeyRequest) -> TokenResponse | DeviceTokenResp
         user = users.authenticate(conn, body.username, body.password)
         if user is None:
             raise HTTPException(status_code=401, detail="Invalid username or password.")
+        users.record_login(conn, user.username)
         return TokenResponse(**auth.issue_tokens(conn, user))
 
 
@@ -99,7 +102,9 @@ def logout(body: RefreshRequest) -> Response:
 
 @router.post("/password", dependencies=[Depends(auth.rate_limit_login)])
 def change_password(body: PasswordChange, user: CurrentUser) -> TokenResponse:
-    """Change your own password. Every other sign-in is signed out; this one gets a new pair."""
+    """Change your own password. Every other sign-in is signed out; this one gets a new pair.
+
+    Also how a user meets an admin's requirement to choose a new password."""
     if user == auth.ANONYMOUS_ADMIN:
         raise HTTPException(status_code=400, detail="Auth is off: there is no account to change.")
     if user.role == users.DEVICE_ROLE:
@@ -119,8 +124,14 @@ class Me(BaseModel):
     username: str
     role: str
     auth: bool  # False when P4N4_API_AUTH=off (everyone is an anonymous admin)
+    password_change_required: bool = False
 
 
 @router.get("/me")
 def me(user: CurrentUser) -> Me:
-    return Me(username=user.username, role=user.role, auth=user != auth.ANONYMOUS_ADMIN)
+    return Me(
+        username=user.username,
+        role=user.role,
+        auth=user != auth.ANONYMOUS_ADMIN,
+        password_change_required=user.must_change_password,
+    )

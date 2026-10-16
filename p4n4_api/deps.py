@@ -46,6 +46,15 @@ def optional_project() -> tuple[Path, dict] | None:
 OptionalProject = Annotated[tuple[Path, dict] | None, Depends(optional_project)]
 
 
+def runner_layer(project: tuple[Path, dict] | None) -> str | None:
+    """The layer running the edge inference runner: ai with its ei-runner profile, or a
+    legacy edge layer (None without the project, or when nothing runs it)."""
+    if project is None:
+        return None
+    project_dir, data = project
+    return layout.runner_layer(project_dir, data.get("layers", []))
+
+
 def layer_env(project: tuple[Path, dict] | None, layer: str) -> dict[str, str]:
     """A layer's .env from the project ({} without the project, the layer or the file).
     The stacks' own settings, so upstream credentials need no second copy."""

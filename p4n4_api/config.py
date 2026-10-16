@@ -56,9 +56,10 @@ class Settings(BaseSettings):
     influxdb_org: str | None = None
     influxdb_bucket: str | None = None
     # Where the edge runner writes inference results; default: INFLUXDB_BUCKET_AI_EVENTS
-    # from the project's edge/.env (or iot/.env), then "ai_events"
+    # from the project's ai/.env (edge/.env before the edge layer merged into ai, or
+    # iot/.env), then "ai_events"
     influxdb_ai_events_bucket: str | None = None
-    # The edge stack's inference runner (Edge Impulse .eim, ONNX or mock backend)
+    # The edge inference runner, the ai stack's ei-runner (Edge Impulse .eim, ONNX or mock)
     edge_runner_url: str = "http://localhost:8080"
     # The AI stack: Ollama (models) and Letta (agents). The Letta password defaults to
     # LETTA_SERVER_PASSWORD from the project's ai/.env, and never leaves the server.

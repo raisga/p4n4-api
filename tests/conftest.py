@@ -174,13 +174,25 @@ def ai_stack(monkeypatch):
     return Fake
 
 
-@pytest.fixture()
-def edge_project(tmp_path, monkeypatch):
-    """A multi-layer (iot+edge) project, exported via P4N4_PROJECT_DIR."""
-    mf.save(tmp_path / mf.MANIFEST_FILE, mf.create("proj-edge", ["iot", "edge"]))
-    for name in ("iot", "edge"):
+@pytest.fixture(params=["ai", "edge"])
+def runner_project(request, tmp_path, monkeypatch):
+    """A multi-layer project that runs the edge inference runner, exported via
+    P4N4_PROJECT_DIR: iot plus the ai layer with its ei-runner profile, or plus a legacy
+    edge layer (a project from before the edge layer merged into ai)."""
+    layer = request.param
+    mf.save(tmp_path / mf.MANIFEST_FILE, mf.create("proj-runner", ["iot", layer]))
+    for name in ("iot", layer):
         (tmp_path / name).mkdir()
-        _populate_layer(tmp_path / name, name)
+    _populate_layer(tmp_path / "iot", "iot")
+    if layer == "ai":
+        _populate_layer(tmp_path / "ai", "ai")
+        envutil.set_value(tmp_path / "ai" / ".env", "COMPOSE_PROFILES", "ollama,ei-runner")
+        envutil.set_value(tmp_path / "ai" / ".env", "INFLUXDB_BUCKET_AI_EVENTS", "x")
+    else:
+        (tmp_path / "edge" / "docker-compose.yml").touch()
+        envutil.write(
+            tmp_path / "edge" / ".env", {"MODEL_BACKEND": "auto", "INFLUXDB_BUCKET_AI_EVENTS": "x"}
+        )
     monkeypatch.setenv("P4N4_PROJECT_DIR", str(tmp_path))
     return tmp_path
 

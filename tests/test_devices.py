@@ -117,7 +117,12 @@ def test_device_signs_in_with_key(admin, anon):
     )
     assert "refresh_token" not in tokens
     me = anon.get("/api/v1/auth/me", headers=_bearer(tokens["access_token"])).json()
-    assert me == {"username": "device:greenhouse-01", "role": "device", "auth": True}
+    assert me == {
+        "username": "device:greenhouse-01",
+        "role": "device",
+        "auth": True,
+        "password_change_required": False,
+    }
     assert admin.get("/api/v1/devices/greenhouse-01").json()["last_seen_at"] is not None
 
 

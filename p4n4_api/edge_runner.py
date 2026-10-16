@@ -1,4 +1,4 @@
-"""The edge stack's inference runner (stacks/edge runner/runner.py) over its HTTP API.
+"""The edge inference runner (the ai stack's ei-runner, runner/runner.py) over its HTTP API.
 
 One runner, one active backend (its MODEL_BACKEND): an Edge Impulse `.eim` model ("model"),
 an ONNX model ("onnx"), or simulated results ("mock") when no model is loaded. All three

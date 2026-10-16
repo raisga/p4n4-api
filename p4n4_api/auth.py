@@ -17,6 +17,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from p4n4_api import db, devices, users
 from p4n4_api.config import load_settings
+from p4n4_api.errors import ApiError
 from p4n4_api.users import User
 
 ALGORITHM = "HS256"
@@ -126,6 +127,8 @@ def issue_tokens(conn: sqlite3.Connection, user: User, family: str | None = None
         "refresh_expires_in": int(REFRESH_TTL.total_seconds()),
         "username": user.username,
         "role": user.role,
+        # Clients ask for a new password first; until then require_role answers 403
+        "password_change_required": user.must_change_password,
     }
 
 
@@ -237,9 +240,16 @@ CurrentUser = Annotated[User, Depends(current_user)]
 
 
 def require_role(role: str):
-    """Dependency factory: 403 unless the user has `role` or a higher one."""
+    """Dependency factory: 403 unless the user has `role` or a higher one, and doesn't owe
+    a new password (the /auth routes, which don't use this, stay open to set one)."""
 
     def check(user: CurrentUser) -> User:
+        if user.must_change_password:
+            raise ApiError(
+                403,
+                "password_change_required",
+                "Choose a new password first (POST /auth/password).",
+            )
         if not user.has_role(role):
             raise HTTPException(status_code=403, detail=f"Requires the {role} role.")
         return user

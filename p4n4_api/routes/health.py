@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from p4n4_api import __version__, ai, docker, edge_runner, influx
 from p4n4_api.config import load_settings
-from p4n4_api.deps import get_project
+from p4n4_api.deps import get_project, runner_layer
 from p4n4_api.mqtt import bridge
 
 router = APIRouter(tags=["health"])
@@ -80,7 +80,7 @@ async def ready() -> JSONResponse:
             strict=True,
         ):
             checks[name] = {"ok": error is None, "detail": error, "required": False}
-    if project is not None and "edge" in project[1].get("layers", []):
+    if runner_layer(project) is not None:
         try:
             await edge_runner.health(timeout=3)
             checks["edge_runner"] = {"ok": True, "required": False}

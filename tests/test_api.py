@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from p4n4_lib import env as envutil
 from p4n4_lib import manifest as mf
 
@@ -132,6 +134,101 @@ def test_project_home_stays_inside_project(client, flat_project, tmp_path_factor
     mf.save(path, data)
     (flat_project / "HOME.md").symlink_to(outside)
     assert client.get("/api/v1/project/home").status_code == 204
+
+
+# ── /api/v1/project/vision ────────────────────────────────────────────────────
+
+
+def _set_vision(project_dir, vision):
+    path = project_dir / mf.MANIFEST_FILE
+    data = mf.load(path)
+    data["dashboard"] = {"vision": vision}
+    mf.save(path, data)
+
+
+def test_project_vision_none_by_default(client, flat_project):
+    assert client.get("/api/v1/project/vision").status_code == 204
+
+
+def test_project_vision_from_manifest(client, flat_project):
+    _set_vision(flat_project, {"file": "vision/store.json"})
+    assert client.get("/api/v1/project/vision").status_code == 204
+    (flat_project / "vision").mkdir()
+    bundle = {
+        "version": 1,
+        "behaviors": {"takes": {"en": "Takes it"}},
+        "alerts": [
+            {"code": "A1", "tone": "review", "behaviors": ["takes"], "title": {"en": "Look"}}
+        ],
+        "cameras": {
+            "cam-1": {
+                "zones": ["z"],
+                "recording": {"duration": 2.5, "boxes": [[0.0, [[1, 0.1, 0.2, 0.3, 0.4, 0.9]]]]},
+            }
+        },
+    }
+    (flat_project / "vision" / "store.json").write_text(json.dumps(bundle))
+    body = client.get("/api/v1/project/vision").json()
+    assert body["behaviors"] == bundle["behaviors"]
+    assert body["alerts"][0]["code"] == "A1" and body["alerts"][0]["zones"] is None
+    recording = body["cameras"]["cam-1"]["recording"]
+    assert recording["boxes"] == [[0.0, [[1, 0.1, 0.2, 0.3, 0.4, 0.9]]]]
+    assert recording["behaviors"] == [] and body["live"] is None
+    assert recording["objects"] == [] and body["objects"] == []
+
+
+def test_project_vision_keeps_objects(client, flat_project):
+    (flat_project / "vision.json").write_text(
+        json.dumps(
+            {
+                "objects": [{"id": "tops", "label": {"en": "Tops"}}, {"id": "bags"}],
+                "cameras": {
+                    "cam-1": {
+                        "recording": {
+                            "duration": 2.0,
+                            "objects": [[0.0, [[1, 0.1, 0.2, 0.3, 0.4, 0.6]]], [0.2, []]],
+                        }
+                    }
+                },
+            }
+        )
+    )
+    _set_vision(flat_project, {"file": "vision.json"})
+    body = client.get("/api/v1/project/vision").json()
+    assert body["objects"] == [{"id": "tops", "label": {"en": "Tops"}}, {"id": "bags", "label": {}}]
+    assert body["cameras"]["cam-1"]["recording"]["objects"] == [
+        [0.0, [[1, 0.1, 0.2, 0.3, 0.4, 0.6]]],
+        [0.2, []],
+    ]
+
+
+def test_project_vision_adds_the_live_stream(client, flat_project):
+    (flat_project / "vision.json").write_text('{"cameras": {}}')
+    _set_vision(flat_project, {"file": "vision.json", "live": {"port": 8000, "path": "/stream"}})
+    live = client.get("/api/v1/project/vision").json()["live"]
+    assert live == {"url": None, "port": 8000, "path": "/stream"}
+
+
+def test_project_vision_bad_files_are_none(client, flat_project, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside") / "vision.json"
+    outside.write_text('{"cameras": {}}')
+    for name, content in [
+        ("broken.json", "{nope"),
+        ("list.json", "[]"),
+        ("no-cameras.json", "{}"),
+        (
+            "bad-tone.json",
+            '{"cameras": {}, "alerts": [{"code": "A", "tone": "x", "behaviors": [], "title": {}}]}',
+        ),
+    ]:
+        (flat_project / name).write_text(content)
+        _set_vision(flat_project, {"file": name})
+        assert client.get("/api/v1/project/vision").status_code == 204
+    _set_vision(flat_project, {"file": f"../{outside.parent.name}/vision.json"})
+    assert client.get("/api/v1/project/vision").status_code == 204
+    (flat_project / "linked.json").symlink_to(outside)
+    _set_vision(flat_project, {"file": "linked.json"})
+    assert client.get("/api/v1/project/vision").status_code == 204
 
 
 def test_project_home_normies_can_read(anon, flat_project):

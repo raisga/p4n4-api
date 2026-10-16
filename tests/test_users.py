@@ -120,6 +120,101 @@ def test_delete(admin, anon):
     assert anon.get("/api/v1/auth/me", headers=_bearer(tokens["access_token"])).status_code == 401
 
 
+def test_sign_out_everywhere_keeps_the_password(admin, anon):
+    make_user("alice", "operator")
+    tablet, phone = login(anon, "alice"), login(anon, "alice")
+    assert admin.post("/api/v1/users/alice/sign-out").status_code == 204
+    for old in (tablet, phone):
+        assert anon.get("/api/v1/auth/me", headers=_bearer(old["access_token"])).status_code == 401
+        r = anon.post("/api/v1/auth/refresh", json={"refresh_token": old["refresh_token"]})
+        assert r.status_code == 401
+    login(anon, "alice")
+    entry = admin.get("/api/v1/audit").json()["items"][0]
+    assert (entry["action"], entry["target"]) == ("user.sign_out", "alice")
+    assert admin.post("/api/v1/users/nobody/sign-out").status_code == 404
+
+
+def test_sign_out_needs_admin(client, normie):
+    for c in (client, normie):
+        assert c.post("/api/v1/users/ops/sign-out").status_code == 403
+
+
+def test_last_sign_in_is_recorded(admin, anon):
+    make_user("alice", "operator")
+    assert admin.get("/api/v1/users/alice").json()["last_login_at"] is None
+    login(anon, "alice")
+    seen = admin.get("/api/v1/users/alice").json()["last_login_at"]
+    assert seen and seen.endswith("+00:00")
+    # A refresh isn't a sign-in
+    assert admin.get("/api/v1/users/alice").json()["last_login_at"] == seen
+
+
+# ── Must change password ──────────────────────────────────────────────────────
+
+
+def test_new_user_must_change_password_first(admin, anon):
+    r = admin.post(
+        "/api/v1/users",
+        json={
+            "username": "tablet",
+            "password": PASSWORD,
+            "role": "normie",
+            "must_change_password": True,
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["must_change_password"] is True
+    tokens = login(anon, "tablet")
+    assert tokens["password_change_required"] is True
+    token = tokens["access_token"]
+
+    # Everything but the /auth routes waits for the new password
+    r = anon.get("/api/v1/dashboard/views", headers=_bearer(token))
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "password_change_required"
+    me = anon.get("/api/v1/auth/me", headers=_bearer(token)).json()
+    assert me["password_change_required"] is True
+
+    r = _change(anon, token)
+    assert r.status_code == 200
+    fresh = r.json()
+    assert fresh["password_change_required"] is False
+    assert (
+        anon.get("/api/v1/dashboard/views", headers=_bearer(fresh["access_token"])).status_code
+        == 200
+    )
+    assert admin.get("/api/v1/users/tablet").json()["must_change_password"] is False
+
+
+def test_reset_can_require_a_new_password(admin, anon):
+    make_user("alice", "operator")
+    r = admin.patch(
+        "/api/v1/users/alice", json={"password": NEW_PASSWORD, "must_change_password": True}
+    )
+    assert r.json()["must_change_password"] is True
+    assert login(anon, "alice", NEW_PASSWORD)["password_change_required"] is True
+    entry = admin.get("/api/v1/audit").json()["items"][0]
+    assert entry["outcome"] == "password reset, must change password"
+
+    # A plain reset meets the requirement
+    admin.patch("/api/v1/users/alice", json={"password": PASSWORD})
+    assert login(anon, "alice")["password_change_required"] is False
+
+
+def test_requirement_without_a_reset_applies_at_once(admin, anon):
+    make_user("alice", "operator")
+    token = login(anon, "alice")["access_token"]
+    assert (
+        admin.patch("/api/v1/users/alice", json={"must_change_password": True}).status_code == 200
+    )
+    assert anon.get("/api/v1/stacks", headers=_bearer(token)).status_code == 403
+    admin.patch("/api/v1/users/alice", json={"must_change_password": False})
+    assert (
+        anon.get("/api/v1/auth/me", headers=_bearer(token)).json()["password_change_required"]
+        is False
+    )
+
+
 # ── Last admin ────────────────────────────────────────────────────────────────
 
 

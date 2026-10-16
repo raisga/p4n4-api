@@ -237,7 +237,7 @@ RESULTS_CSV = (
 )
 
 
-def test_results(client, edge_project, influxdb):
+def test_results(client, runner_project, influxdb):
     influxdb.handler = lambda request: httpx.Response(200, text=RESULTS_CSV)
     r = client.get(
         "/api/v1/inference/results",
@@ -258,14 +258,14 @@ def test_results(client, edge_project, influxdb):
     }
     assert body["results"][1]["backend"] == "edge-impulse"
     flux = json.loads(influxdb.requests[-1].content)["query"]
-    # The bucket comes from edge/.env (INFLUXDB_BUCKET_AI_EVENTS, "x" in the fixture).
+    # The bucket comes from the runner layer's .env (INFLUXDB_BUCKET_AI_EVENTS: "x").
     assert 'from(bucket: "x")' in flux
     assert 'r._measurement == "inference_result"' in flux
     assert 'r.mode == "model"' in flux  # edge-impulse is "model" in the runner's results
     assert "pivot(" in flux and "desc: true" in flux
 
 
-def test_results_validation(client, edge_project, influxdb):
+def test_results_validation(client, runner_project, influxdb):
     assert client.get("/api/v1/inference/results", params={"backend": "tflite"}).status_code == 422
     assert client.get("/api/v1/inference/results", params={"start": "soon"}).status_code == 422
     assert influxdb.requests == []
@@ -283,12 +283,12 @@ def test_results_bucket_default_and_override(client, flat_project, influxdb, mon
 # ── Edge metrics and readiness ────────────────────────────────────────────────
 
 
-def test_edge_metrics_include_inference_latency(client, edge_project, runner):
+def test_edge_metrics_include_inference_latency(client, runner_project, runner):
     runner.handler = fake_runner(ONNX_INFO)
     assert client.get("/api/v1/edge/metrics").json()["inference_ms"] == 3.25
 
 
-def test_edge_metrics_without_runner(client, edge_project, runner):
+def test_edge_metrics_without_runner(client, runner_project, runner):
     body = client.get("/api/v1/edge/metrics").json()
     assert "inference_ms" not in body and "cpu_percent" in body
 
@@ -299,12 +299,20 @@ def test_edge_metrics_skip_runner_without_edge_layer(client, flat_project, runne
     assert runner.requests == []
 
 
-def test_edge_metrics_no_latency_yet(client, edge_project, runner):
+def test_edge_metrics_skip_runner_while_ai_doesnt_run_it(client, multi_project, runner):
+    # The ai layer without the ei-runner profile: nothing to ask
+    runner.handler = fake_runner(ONNX_INFO)
+    assert "inference_ms" not in client.get("/api/v1/edge/metrics").json()
+    assert runner.requests == []
+    assert "edge_runner" not in client.get("/ready").json()["checks"]
+
+
+def test_edge_metrics_no_latency_yet(client, runner_project, runner):
     runner.handler = fake_runner(MOCK_INFO, health=HEALTH | {"last_latency_ms": None})
     assert "inference_ms" not in client.get("/api/v1/edge/metrics").json()
 
 
-def test_ready_reports_runner(client, edge_project, runner, influxdb):
+def test_ready_reports_runner(client, runner_project, runner, influxdb):
     influxdb.handler = lambda request: httpx.Response(200)
     r = client.get("/ready")
     assert r.status_code == 200  # the runner isn't required
