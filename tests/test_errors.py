@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from p4n4_api.main import create_app
@@ -65,6 +66,38 @@ def test_unhandled_error_hides_details(monkeypatch, flat_project):
     r = c.get("/api/v1/project/validate")
     assert r.status_code == 500
     assert _error(r) == {"code": "internal_error", "message": "Internal server error."}
+
+
+def test_unhandled_error_keeps_cors_and_request_id(monkeypatch, flat_project):
+    # A cross-origin browser can read the body, and a report can be matched to the log.
+    monkeypatch.setenv("P4N4_API_AUTH", "off")
+    monkeypatch.setenv("P4N4_API_CORS_ORIGINS", "http://localhost:8081")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("secret internals")
+
+    monkeypatch.setattr("p4n4_api.routes.project.validate_project", boom)
+    c = TestClient(create_app(), raise_server_exceptions=False)
+    r = c.get(
+        "/api/v1/project/validate",
+        headers={"Origin": "http://localhost:8081", "X-Request-ID": "report-42"},
+    )
+    assert r.status_code == 500
+    assert _error(r)["code"] == "internal_error"
+    assert r.headers["access-control-allow-origin"] == "http://localhost:8081"
+    assert r.headers["x-request-id"] == "report-42"
+
+
+def test_unhandled_error_still_raised(monkeypatch, flat_project):
+    # The exception still reaches the server (which logs it) and test clients.
+    monkeypatch.setenv("P4N4_API_AUTH", "off")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("secret internals")
+
+    monkeypatch.setattr("p4n4_api.routes.project.validate_project", boom)
+    with pytest.raises(RuntimeError, match="secret internals"):
+        TestClient(create_app()).get("/api/v1/project/validate")
 
 
 def test_openapi_documents_error_body(anon):

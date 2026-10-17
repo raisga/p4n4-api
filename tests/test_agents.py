@@ -197,7 +197,6 @@ def test_chat_include_status(client, ai_stack, multi_project, monkeypatch):
 
 def test_generate_include_status_keeps_system_prompt(client, ai_stack, monkeypatch):
     ai_stack.handler = fake_ai()
-    monkeypatch.setattr("p4n4_api.docker.daemon_error", lambda: "cannot connect")
     client.post(
         "/api/v1/agents/generate",
         json={"model": "m", "prompt": "Hi", "system": "Be brief.", "include_status": True},
@@ -209,11 +208,24 @@ def test_generate_include_status_keeps_system_prompt(client, ai_stack, monkeypat
 
 
 def test_status_when_docker_is_down(client, ai_stack, multi_project, monkeypatch):
+    from p4n4_lib import compose
+
+    def ps(cwd):
+        raise compose.DockerError("cannot connect")
+
     ai_stack.handler = fake_ai()
-    monkeypatch.setattr("p4n4_api.docker.daemon_error", lambda: "cannot connect")
+    monkeypatch.setattr("p4n4_api.routes.stacks.compose.ps", ps)
     _chat(client, include_status=True)
     status = _sent(ai_stack, "/api/chat")["messages"][0]["content"]
-    assert "- Stacks: unknown (Docker unavailable: cannot connect)" in status
+    assert "- Stacks: unknown (Can't read the stack's status: cannot connect)" in status
+
+
+def test_status_when_docker_is_off(client, ai_stack, multi_project, monkeypatch):
+    ai_stack.handler = fake_ai()
+    monkeypatch.setenv("P4N4_API_DOCKER", "off")
+    _chat(client, include_status=True)
+    status = _sent(ai_stack, "/api/chat")["messages"][0]["content"]
+    assert "- Stacks: unknown (Docker access is disabled (P4N4_API_DOCKER=off).)" in status
 
 
 @pytest.mark.parametrize(

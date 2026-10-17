@@ -12,16 +12,17 @@ from p4n4_lib import compose
 from p4n4_api.config import load_settings
 
 _TIMEOUT_S = 5
+DISABLED = "Docker access is disabled (P4N4_API_DOCKER=off)."
 
 
 def daemon_error() -> str | None:
     """Why Docker (daemon or Compose) can't be used, or None when it can.
 
-    Checked before stack endpoints run, so they answer 503 with the reason (`compose.ps`
-    also raises DockerError when Compose fails, which those endpoints map to 503).
+    Checked by /ready and before stack actions run, so they answer 503 with the reason.
+    Status reads skip it: `compose.ps` raises when the daemon or Compose fails.
     """
     if not load_settings().docker_enabled:
-        return "Docker access is disabled (P4N4_API_DOCKER=off)."
+        return DISABLED
     try:
         result = subprocess.run(
             ["docker", "version", "--format", "{{.Server.Version}}"],
@@ -51,7 +52,15 @@ def require_daemon() -> None:
         raise HTTPException(status_code=503, detail=f"Docker is unavailable: {error}")
 
 
+def require_enabled() -> None:
+    """Dependency: 503 when Docker access is turned off. Cheaper than require_daemon, for
+    routes whose own Docker call fails with a reason anyway."""
+    if not load_settings().docker_enabled:
+        raise HTTPException(status_code=503, detail=f"Docker is unavailable: {DISABLED}")
+
+
 DockerDaemon = Annotated[None, Depends(require_daemon)]
+DockerEnabled = Annotated[None, Depends(require_enabled)]
 
 
 def started_at(container_ids: list[str]) -> dict[str, datetime]:

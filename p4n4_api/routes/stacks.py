@@ -92,7 +92,7 @@ def _service(svc: dict, started: dict[str, datetime], now: datetime) -> Service:
 def stack_status(name: str, path: Path) -> Stack:
     try:
         raw = compose.ps(path)
-    except compose.DockerError as exc:
+    except (compose.DockerError, compose.ComposeNotFoundError) as exc:
         raise HTTPException(
             status_code=503, detail=f"Can't read the stack's status: {exc}"
         ) from exc
@@ -125,10 +125,10 @@ def find_stack(project: tuple[Path, dict], stack: str) -> Path:
 
 
 @router.get("")
-def stacks(project: Project, _: docker.DockerDaemon) -> Stacks:
+def stacks(project: Project, _: docker.DockerEnabled) -> Stacks:
     return Stacks(stacks=[stack_status(name, path) for name, path in stack_dirs(project)])
 
 
 @router.get("/{stack}")
-def stack(stack: str, project: Project, _: docker.DockerDaemon) -> Stack:
+def stack(stack: str, project: Project, _: docker.DockerEnabled) -> Stack:
     return stack_status(stack, find_stack(project, stack))

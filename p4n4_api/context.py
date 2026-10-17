@@ -5,19 +5,24 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 
+from fastapi import HTTPException
+
 from p4n4_api import docker
+from p4n4_api.config import load_settings
 from p4n4_api.routes.edge import host_metrics, inference_ms_from_runner
 from p4n4_api.routes.stacks import stack_dirs, stack_status
 
 
 def _stacks(project: tuple) -> list[str]:
-    error = docker.daemon_error()
-    if error:
-        return [f"- Stacks: unknown (Docker unavailable: {error})"]
+    if not load_settings().docker_enabled:
+        return [f"- Stacks: unknown ({docker.DISABLED})"]
+    try:
+        stacks = [stack_status(name, path) for name, path in stack_dirs(project)]
+    except HTTPException as exc:  # Docker or Compose failed
+        return [f"- Stacks: unknown ({exc.detail})"]
     lines = []
-    for name, path in stack_dirs(project):
-        stack = stack_status(name, path)
-        line = f"- Stack {name}: {stack.running}/{stack.total} services running"
+    for stack in stacks:
+        line = f"- Stack {stack.name}: {stack.running}/{stack.total} services running"
         problems = [
             f"{s.name} {s.state}" + (f" (exit {s.exit_code})" if s.exit_code else "")
             for s in stack.services

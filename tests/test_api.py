@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from p4n4_lib import env as envutil
 from p4n4_lib import manifest as mf
 
@@ -337,9 +338,17 @@ def test_unknown_stack_404(client, multi_project):
     assert r.status_code == 404
 
 
-def test_stacks_503_when_docker_down(client, multi_project, monkeypatch):
+@pytest.mark.parametrize("error", ["DockerError", "ComposeNotFoundError"])
+def test_stacks_503_when_docker_down(client, multi_project, monkeypatch, error):
     # The dashboard treats any non-200 as "API down" and falls back to port probes.
-    monkeypatch.setattr("p4n4_api.docker.daemon_error", lambda: "cannot connect")
+    from p4n4_lib import compose
+
+    def ps(cwd):
+        raise getattr(compose, error)("cannot connect")
+
+    monkeypatch.setattr("p4n4_api.routes.stacks.compose.ps", ps)
+    # Status reads rely on compose.ps failing, without probing the daemon first.
+    monkeypatch.setattr("p4n4_api.docker.daemon_error", lambda: pytest.fail("probed"))
     for path in ("/api/v1/stacks", "/api/v1/stacks/iot"):
         r = client.get(path)
         assert r.status_code == 503

@@ -96,7 +96,7 @@ def create_app() -> FastAPI:
     )
     errors.install(app)
     settings = load_settings()
-    # Added first, so it runs inside the proxy middleware and logs the real client address.
+    # Added before the proxy middleware, so it runs inside it and logs the real client address.
     app.add_middleware(logs.RequestIdMiddleware)
     if settings.trusted_proxies:
         # Behind the dashboard's nginx every request comes from the proxy's address. Take the
