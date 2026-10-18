@@ -648,6 +648,8 @@ def test_every_endpoint_documents_its_response(anon):
             content = ok.get("content", {})
             if set(content) == {"text/event-stream"}:
                 continue  # a stream: its events are documented in the description
+            if content and all(kind.startswith("image/") for kind in content):
+                continue  # a picture
             schema = content.get("application/json", {}).get("schema", {})
             if not schema or schema.get("additionalProperties") is True:
                 untyped.append(f"{method.upper()} {path}")

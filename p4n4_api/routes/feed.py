@@ -10,9 +10,10 @@ The upstream speaks p4n4-dashboard's feed contract (dashboard/README.md#feed-con
 
     GET  <url>?limit=&before=     {"title", "items": [...], "counts", "next_before"}
     POST <url>/<id>/action        {"action", "by"}  → the item as it is now
+    GET  <url>/<id>/image         the item's picture (an item with "image": true)
 
 Items are passed through as they come (fields beyond the contract's included), except
-that a normie's have no ``actions``.
+that a normie's have no ``actions``, and a ``link`` that isn't http(s) is dropped.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import re
 from typing import Annotated, Any
 
 import httpx
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from p4n4_api import audit, auth
@@ -38,11 +39,21 @@ transport: httpx.AsyncBaseTransport | None = None
 # What an item id may be: it goes into the upstream's URL. Never "." or "..", which the
 # HTTP client resolves as path segments, sending the action (and token) elsewhere
 ITEM_ID = re.compile(r"^(?!\.{1,2}$)[A-Za-z0-9._:-]{1,128}$")
+# What an item's picture may be, and how big
+IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp")
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 
 class FeedAction(BaseModel):
     id: str
     label: str
+
+
+class FeedLink(BaseModel):
+    """A page about the item, opened in the browser (e.g. the project's own review page)."""
+
+    label: str
+    url: str
 
 
 class FeedItem(BaseModel):
@@ -66,6 +77,9 @@ class FeedItem(BaseModel):
     actions: list[FeedAction] | None = None
     meta: dict[str, Any] | None = None
     synthetic: bool | None = None
+    # A picture of it (the evidence), at GET /api/v1/feed/<id>/image
+    image: bool | None = None
+    link: FeedLink | None = None
 
 
 class Feed(BaseModel):
@@ -141,7 +155,9 @@ async def get_feed(
     body = await _call("GET", url, headers, params=params)
     can_act = user.has_role("operator")
     items = [
-        i for i in body.get("items") or [] if isinstance(i, dict) and "id" in i and "title" in i
+        _safe_link(i)
+        for i in body.get("items") or []
+        if isinstance(i, dict) and "id" in i and "title" in i
     ]
     if not can_act:
         items = [{k: v for k, v in i.items() if k != "actions"} for i in items]
@@ -154,15 +170,62 @@ async def get_feed(
     )
 
 
+def _safe_link(item: dict) -> dict:
+    """The item without a link the dashboard shouldn't open (anything but an http(s) URL)."""
+    link = item.get("link")
+    if link is None:
+        return item
+    ok = (
+        isinstance(link, dict)
+        and isinstance(link.get("label"), str)
+        and isinstance(link.get("url"), str)
+        and re.match(r"^https?://", link["url"], re.IGNORECASE)
+    )
+    return item if ok else {k: v for k, v in item.items() if k != "link"}
+
+
+def _item_id(item_id: str) -> str:
+    if not ITEM_ID.match(item_id):
+        raise ApiError(
+            400, "bad_item_id", "Item ids are 1-128 letters, digits, '.', '_', ':', '-'."
+        )
+    return item_id
+
+
+@router.get(
+    "/{item_id}/image",
+    response_class=Response,
+    responses={200: {"content": {t: {} for t in IMAGE_TYPES}, "description": "The picture"}},
+)
+async def image(item_id: str, user: CurrentUser, project: OptionalProject) -> Response:
+    """An item's picture (its evidence), for anyone signed in, with the feed's token."""
+    url, headers = _upstream(project)
+    target = f"{url}/{_item_id(item_id)}/image"
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT_S, transport=transport) as client:
+            response = await client.get(target, headers=headers)
+    except httpx.HTTPError as exc:
+        raise ApiError(502, "feed_unreachable", f"The feed is unreachable at {url}: {exc}") from exc
+    if response.status_code == 404:
+        raise ApiError(404, "feed_item_not_found", _message(response) or "No picture.")
+    if response.status_code != 200:
+        raise ApiError(502, "feed_failed", f"The feed answered {response.status_code}.")
+    kind = response.headers.get("content-type", "").split(";")[0].strip().lower()
+    if kind not in IMAGE_TYPES:
+        raise ApiError(502, "feed_failed", f"The feed's picture is {kind or 'untyped'}, not one.")
+    if len(response.content) > MAX_IMAGE_BYTES:
+        raise ApiError(502, "feed_failed", "The feed's picture is over 8 MB.")
+    return Response(
+        response.content, media_type=kind, headers={"Cache-Control": "private, max-age=300"}
+    )
+
+
 @router.post("/{item_id}/action", dependencies=operator_only)
 async def act(
     item_id: str, body: Action, user: CurrentUser, project: OptionalProject
 ) -> ActionResult:
     """Act on an item (operators): the upstream decides what the action means."""
-    if not ITEM_ID.match(item_id):
-        raise ApiError(
-            400, "bad_item_id", "Item ids are 1-128 letters, digits, '.', '_', ':', '-'."
-        )
+    _item_id(item_id)
     url, headers = _upstream(project)
     result = await _call(
         "POST",

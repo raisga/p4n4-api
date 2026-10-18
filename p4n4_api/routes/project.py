@@ -62,7 +62,8 @@ class VisionRecording(BaseModel):
     duration: float = Field(gt=0)
     width: int | None = None
     height: int | None = None
-    # [t, [[track, x1, y1, x2, y2, confidence], …]]: boxes normalised to the frame
+    # [t, [[track, x1, y1, x2, y2, confidence(, kind)], …]]: boxes normalised to the frame;
+    # the optional kind (an index into the overlay's `objects`, e.g. a team) colours the person
     boxes: list[list[Any]] = []
     # [start, end, track, behaviour, confidence]: seconds of the clip
     behaviors: list[list[Any]] = []
