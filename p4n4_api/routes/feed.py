@@ -142,6 +142,10 @@ def _message(response: httpx.Response) -> str:
     return str(body.get("error") or body.get("detail") or "") if isinstance(body, dict) else ""
 
 
+# The reader's language (a tag such as es or en-US), passed on for the upstream's text
+Lang = Annotated[str | None, Query(pattern=r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$")]
+
+
 # Unset fields stay out, as the upstream left them out (a normie's items have no "actions")
 @router.get("", response_model_exclude_none=True)
 async def get_feed(
@@ -149,9 +153,14 @@ async def get_feed(
     project: OptionalProject,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before: Annotated[float | None, Query()] = None,
+    lang: Lang = None,
 ) -> Feed:
     url, headers = _upstream(project)
-    params = {"limit": limit, **({"before": before} if before is not None else {})}
+    params = {
+        "limit": limit,
+        **({"before": before} if before is not None else {}),
+        **({"lang": lang} if lang else {}),
+    }
     body = await _call("GET", url, headers, params=params)
     can_act = user.has_role("operator")
     items = [
@@ -222,7 +231,7 @@ async def image(item_id: str, user: CurrentUser, project: OptionalProject) -> Re
 
 @router.post("/{item_id}/action", dependencies=operator_only)
 async def act(
-    item_id: str, body: Action, user: CurrentUser, project: OptionalProject
+    item_id: str, body: Action, user: CurrentUser, project: OptionalProject, lang: Lang = None
 ) -> ActionResult:
     """Act on an item (operators): the upstream decides what the action means."""
     _item_id(item_id)
@@ -232,6 +241,7 @@ async def act(
         f"{url}/{item_id}/action",
         headers,
         json={"action": body.action, "by": user.username},
+        params={"lang": lang} if lang else None,
     )
     audit.record(user.username, "feed.action", item_id, body.action)
     return ActionResult(action=body.action, item=result)

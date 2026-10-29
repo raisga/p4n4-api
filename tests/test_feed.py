@@ -100,6 +100,17 @@ def test_reads_the_feed_with_the_projects_token(client, feed_project, upstream):
     assert sent.url.params["limit"] == "20" and sent.url.params["before"] == "1791074857.9"
 
 
+def test_the_readers_language_is_passed_on(client, feed_project, upstream):
+    assert client.get("/api/v1/feed", params={"lang": "en-US"}).status_code == 200
+    assert upstream.requests[0].url.params["lang"] == "en-US"
+    r = client.post("/api/v1/feed/ALT-20261003-000001/action?lang=es", json={"action": "attended"})
+    assert r.status_code == 200, r.text
+    assert upstream.requests[1].url.params["lang"] == "es"
+    assert "lang" not in client.get("/api/v1/feed").request.url.params
+    assert "lang" not in upstream.requests[2].url.params
+    assert client.get("/api/v1/feed", params={"lang": "en; drop"}).status_code == 422
+
+
 def test_the_token_never_reaches_the_browser(client, feed_project, upstream):
     assert "read-secret" not in client.get("/api/v1/feed").text
 
