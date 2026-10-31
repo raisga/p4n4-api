@@ -7,7 +7,7 @@
 
 # Base images are pinned by digest (multi-arch indexes); Dependabot bumps them.
 # Static docker and docker-compose binaries, copied into the runtime image.
-FROM docker:29-cli@sha256:b1805116a6a86cc591b5d5f60a910a0715cdcc9d18d866ad68b1457ead25c35c AS docker-cli
+FROM docker:29-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker-cli
 
 FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS build
 # git only for installing p4n4-lib from a git ref (--build-arg P4N4_LIB=...)
